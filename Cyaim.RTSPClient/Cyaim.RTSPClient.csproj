@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
+    <Description>RTSP Client supports basic operation, onvif voice support G.711A.</Description>
+    <Copyright>Cyaim Studio</Copyright>
+    <PackageProjectUrl>https://github.com/Cyaim/Cyaim.RTSPClient</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Cyaim/Cyaim.RTSPClient</RepositoryUrl>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <DocumentationFile>E:\WorkSpaces\2333\Cyaim.RTSPClient\Cyaim.RTSPClient\Cyaim.RTSPClient.xml</DocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\LICENSE">
+      <Pack>True</Pack>
+      <PackagePath></PackagePath>
+    </None>
+  </ItemGroup>
+
+</Project>

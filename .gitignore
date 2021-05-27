@@ -3,3 +3,5 @@
 ################################################################################
 
 /.vs/Cyaim.RTSPClient
+/Cyaim.RTSPClient/bin/Debug
+/Cyaim.RTSPClient/obj

@@ -1,0 +1,473 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Cyaim.RTSPClient</name>
+    </assembly>
+    <members>
+        <member name="M:System.EncryptUtil.Md532(System.String)">
+            <summary>
+            MD5加密
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.Md532(System.String,System.String)">
+            <summary>
+            加权MD5加密
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.Sha1(System.String)">
+            <summary>
+            SHA1 加密
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.Sha256(System.String)">
+            <summary>
+            SHA256 加密
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.Sha512(System.String)">
+            <summary>
+            SHA512 加密
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.HmacSha1(System.String,System.String)">
+            <summary>
+            HmacSha1 加密
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.HmacSha256(System.String,System.String)">
+            <summary>
+            HmacSha256 加密
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.HmacSha384(System.String,System.String)">
+            <summary>
+            HmacSha384 加密
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.HmacSha512(System.String,System.String)">
+            <summary>
+            HmacSha512 加密
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.HmacMd5(System.String,System.String)">
+            <summary>
+            HmacMd5 加密
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.AesStr(System.String,System.String,System.String)">
+            <summary>  
+            AES加密  
+            </summary>  
+            <param name="value">待加密字段</param>  
+            <param name="keyVal">密钥值</param>  
+            <param name="ivVal">加密辅助向量</param> 
+            <returns></returns>  
+        </member>
+        <member name="M:System.EncryptUtil.UnAesStr(System.String,System.String,System.String)">
+            <summary>  
+            AES解密  
+            </summary>  
+            <param name="value">待加密字段</param>  
+            <param name="keyVal">密钥值</param>  
+            <param name="ivVal">加密辅助向量</param>  
+            <returns></returns>  
+        </member>
+        <member name="M:System.EncryptUtil.AesByte(System.Byte[],System.String,System.String)">
+            <summary>  
+            AES Byte类型 加密  
+            </summary>  
+            <param name="data">待加密明文</param>  
+            <param name="keyVal">密钥值</param>  
+            <param name="ivVal">加密辅助向量</param>  
+            <returns></returns>  
+        </member>
+        <member name="M:System.EncryptUtil.UnAesByte(System.Byte[],System.String,System.String)">
+            <summary>  
+            AES Byte类型 解密  
+            </summary>  
+            <param name="data">待解密明文</param>  
+            <param name="keyVal">密钥值</param>  
+            <param name="ivVal">加密辅助向量</param> 
+            <returns></returns>  
+        </member>
+        <member name="M:System.EncryptUtil.Des(System.String,System.String,System.String)">
+            <summary>
+            DES 加密
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.UnDes(System.String,System.String,System.String)">
+            <summary>
+            DES 解密
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.Base64(System.String)">
+            <summary>
+            BASE64 加密
+            </summary>
+            <param name="value">待加密字段</param>
+            <returns></returns>
+        </member>
+        <member name="M:System.EncryptUtil.UnBase64(System.String)">
+            <summary>
+            BASE64 解密
+            </summary>
+            <param name="value">待解密字段</param>
+            <returns></returns>
+        </member>
+        <member name="M:System.EncryptUtil.Base64Encrypt(System.String)">
+            <summary>
+            Base64加密 可逆
+            </summary>
+            <param name="value">待加密文本</param>
+            <returns></returns>
+        </member>
+        <member name="M:System.EncryptUtil.Base64Decrypt(System.String)">
+            <summary>
+            Base64解密
+            </summary>
+            <param name="ciphervalue">密文</param>
+            <returns></returns>
+        </member>
+        <member name="M:System.EncryptUtil.Str2Bytes(System.String)">
+            <summary>
+            转成数组
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.Bytes2Str(System.Collections.Generic.IEnumerable{System.Byte},System.String)">
+            <summary>
+            转换成字符串
+            </summary>
+        </member>
+        <member name="M:System.EncryptUtil.HashAlgorithmBase(System.Security.Cryptography.HashAlgorithm,System.String,System.Text.Encoding)">
+            <summary>
+            HashAlgorithm 加密统一方法
+            </summary>
+        </member>
+        <member name="T:Cyaim.RTSPClient.Common.RTPPayloadType">
+            <summary>
+            RTP Payload type
+            https://datatracker.ietf.org/doc/html/rfc3551#section-4.5.14
+            </summary>
+        </member>
+        <member name="T:Cyaim.RTSPClient.RTPHeader">
+            <summary>
+            RTPHeader
+            https://datatracker.ietf.org/doc/html/rfc3550#section-5.1
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTPHeader.Version">
+            <summary>
+            2bits
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTPHeader.CSRCCount">
+            <summary>
+            CSRC count (CC): 4 bits
+            The CSRC count contains the number of CSRC identifiers that follow the fixed header.
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTPHeader.Maker">
+            <summary>
+            1bit
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTPHeader.PayloadType">
+            <summary>
+            7bits
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTPHeader.SequenceNumber">
+            <summary>
+            16bits
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTPHeader.Timestamp">
+            <summary>
+            32bits
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTPHeader.SSRC">
+            <summary>
+            32bits
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTPHeader.CSRC">
+            <summary>
+            CSRC list: 0 to 15 items, 32 bits each
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPHeader.Magic">
+            <summary>
+            Rtsp Magic
+            RTSP index 1
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPHeader.Channel">
+            <summary>
+            Channel
+            RTSP index 2
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPHeader.Length1">
+            <summary>
+            Length1
+            RTSP index 3
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPHeader.Length2">
+            <summary>
+            Length2
+            RTSP index 4
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPRequest.Method">
+            <summary>
+            Reuest method
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPRequest.CSeq">
+            <summary>
+            TCP seq
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPRequest.Headers">
+            <summary>
+            Add other request parameters
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPRequest.Content">
+            <summary>
+            Add other request content
+            </summary>
+        </member>
+        <member name="M:Cyaim.RTSPClient.RTSPResponse.#ctor(System.String,System.Byte[])">
+            <summary>
+            Format rtsp control response;Read by line.
+            </summary>
+            <param name="response"></param>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPResponse.Raw">
+            <summary>
+            Raw data
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPResponse.Version">
+            <summary>
+            RTSP version
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPResponse.StatusCode">
+            <summary>
+            code
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPResponse.StatusMsg">
+            <summary>
+            OK
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPResponse.CSeq">
+            <summary>
+            seq
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPResponse.Headers">
+            <summary>
+            Response headers
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPResponse.Response">
+            <summary>
+            Response content
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPSession.requestResults">
+            <summary>
+            请求结果响应
+            K：CSeq,V:result
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPSession.Timeout">
+            <summary>
+            Next tcp connection timeout
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.RTSPSession.WaitResponseTimeout">
+            <summary>
+            Wait response result timeout millisecond.
+            </summary>
+        </member>
+        <member name="M:Cyaim.RTSPClient.RTSPSession.Accept">
+            <summary>
+            Processing response
+            </summary>
+            <returns></returns>
+        </member>
+        <member name="M:Cyaim.RTSPClient.RTSPSession.UpdateTimeout(Cyaim.RTSPClient.RTSPResponse)">
+            <summary>
+            Update server disconnect time.
+            </summary>
+            <param name="res"></param>
+        </member>
+        <member name="M:Cyaim.RTSPClient.RTSPSession.GetResponse(System.Int32)">
+            <summary>
+            Loop get response by CSeq.
+            </summary>
+            <param name="cseq"></param>
+            <returns></returns>
+        </member>
+        <member name="M:Cyaim.RTSPClient.RTSPSession.LoginDigest(System.String,System.String,System.String,System.Boolean)">
+            <summary>
+            Login;
+            mode digest
+            </summary>
+            <param name="username"></param>
+            <param name="password"></param>
+            <param name="uri"></param>
+            <param name="useBackchannel"></param>
+            <returns></returns>
+        </member>
+        <member name="M:Cyaim.RTSPClient.RTSPSession.Setup(System.String,System.String,System.Boolean)">
+            <summary>
+            Setup device channel
+            </summary>
+            <param name="channelUri"></param>
+            <param name="transport"></param>
+            <param name="useBackchannel"></param>
+            <returns></returns>
+        </member>
+        <member name="M:Cyaim.RTSPClient.RTSPSession.Play(System.String,System.String,System.Boolean)">
+            <summary>
+            Play
+            </summary>
+            <param name="channelUri"></param>
+            <param name="range"></param>
+            <param name="useBackchannel"></param>
+            <returns></returns>
+        </member>
+        <member name="M:Cyaim.RTSPClient.RTSPSession.Teardown(System.String,System.Boolean)">
+            <summary>
+            Close channel
+            </summary>
+            <param name="channelUri"></param>
+            <param name="useBackchannel"></param>
+            <returns></returns>
+        </member>
+        <member name="M:Cyaim.RTSPClient.RTSPSession.PlayAudio_G711A(System.Byte[],System.Int32,System.Int32,System.Int64,System.Action{System.Decimal,System.Int64})">
+            <summary>
+            Send G711A format audio to device.
+            </summary>
+            <param name="audio"></param>
+            <param name="fps"></param>
+            <param name="sampleRate"></param>
+            <param name="ssrc"></param>
+            <param name="progress">callback;v1:send progress,v2:packet time</param>
+            <returns></returns>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.v">
+            <summary>
+            Protocol version
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.o">
+            <summary>
+            Owner
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.s">
+            <summary>
+            Session name
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.i">
+            <summary>
+            Session information
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.u">
+            <summary>
+            URI of description
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.e">
+            <summary>
+            Email address
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.p">
+            <summary>
+            Phone number
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.c">
+            <summary>
+            connection information
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.b">
+            <summary>
+            bandwidth information
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.z">
+            <summary>
+            Time zone adjustments
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.k">
+            <summary>
+            Encryption key
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.a">
+            <summary>
+            Zero or more session attributelines
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.t">
+            <summary>
+            Time the session is active
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.r">
+            <summary>
+            Zero or more repeat times
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.MediaDescribes">
+            <summary>
+            Media describe
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.MediaDescribe.m">
+            <summary>
+            Media name and transport address
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.MediaDescribe.i">
+            <summary>
+            Media title
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.MediaDescribe.c">
+            <summary>
+            Conection information
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.MediaDescribe.b">
+            <summary>
+            Bandwidth information
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.MediaDescribe.k">
+            <summary>
+            Encryption key
+            </summary>
+        </member>
+        <member name="P:Cyaim.RTSPClient.SDP.MediaDescribe.a">
+            <summary>
+            Zero or more media attributelines
+            </summary>
+        </member>
+    </members>
+</doc>
