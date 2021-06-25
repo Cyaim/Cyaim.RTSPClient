@@ -393,7 +393,7 @@ namespace Cyaim.RTSPClient
         /// <param name="transport"></param>
         /// <param name="useBackchannel"></param>
         /// <returns></returns>
-        public async Task<RTSPResponse> Setup(string channelUri, string transport, bool useBackchannel, string session)
+        public async Task<RTSPResponse> Setup(string channelUri, string transport, bool useBackchannel)
         {
             Random random = new Random();
 
