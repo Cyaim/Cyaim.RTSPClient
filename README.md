@@ -32,3 +32,8 @@ ffpmeg -formats
 ffmpeg -i 1.mp3 -acodec pcm_alaw -f alaw -ac 1 -ar 8000 -vn out1_8k.g711a
 ffplay -i out1_8k.g711a -f alaw -ac 1 -ar 8000
 ```
+> Query audio file info
+```
+ffprobe -i out1_8k.g711a -v quiet -print_format json -show_format -show_streams
+```
+

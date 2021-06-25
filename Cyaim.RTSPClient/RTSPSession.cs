@@ -116,6 +116,7 @@ namespace Cyaim.RTSPClient
 
                     RTSPResponse response = new RTSPResponse(msg, raw);
 
+                    requestResults.Remove(response.CSeq);
                     requestResults.Add(response.CSeq, response);
 
                     //tcpStream.Flush();
@@ -370,7 +371,7 @@ namespace Cyaim.RTSPClient
                     HasBackChannelSupported = false;
                 }
 
-                if (SDP.MediaDescribes.Count > 0)
+                if (SDP != null && SDP.MediaDescribes.Count > 0)
                 {
                     HasBackChannelSupported = SDP.MediaDescribes.FirstOrDefault(x => x.a.FirstOrDefault(y => y == "sendonly") != null) != null;
                 }
