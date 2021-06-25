@@ -403,12 +403,13 @@ namespace Cyaim.RTSPClient
             return $@"Digest username=""{username}"", realm=""{realm}"", nonce=""{nonce}"", uri=""{uri}"", response=""{dig}""";
         }
 
-        public void UpateAuthorization(RTSPResponse response)
+        public async Task UpdateAuthorization(string authHeader, string uri, string method)
         {
-            var auth = response.Headers.Where(x => x.Key == "WWW-Authenticate").FirstOrDefault();
+            //需要授权
+            //var auth = response.Headers.Where(x => x.Key == "WWW-Authenticate").FirstOrDefault();
             // Digest realm="RTSP SERVER",nonce="3e1456b5a39d3b47f90cd2c149b1e24d",stale="FALSE"
 
-            if (auth.Value.IndexOf("Digest") != 0)
+            if (authHeader.IndexOf("Digest") != 0)
             {
                 throw new Exception("Server auth mode not Digest");
             }
@@ -416,9 +417,19 @@ namespace Cyaim.RTSPClient
             string realm = string.Empty;
             string nonce = string.Empty;
 
-            GetDigestParams(ref realm, ref nonce, auth);
+
+            GetDigestParams(ref realm, ref nonce, authHeader);
             //"rtsp://192.168.1.127:554/1/1"
             this.Authorization = AuthorizationDigest(UserName, Password, uri, realm, nonce, method);
+        }
+
+        public async Task UpateAuthorization(RTSPResponse response, string uri, string method)
+        {
+            //需要授权
+            var auth = response.Headers.Where(x => x.Key == "WWW-Authenticate").FirstOrDefault();
+            // Digest realm="RTSP SERVER",nonce="3e1456b5a39d3b47f90cd2c149b1e24d",stale="FALSE"
+
+            await UpdateAuthorization(auth.Value, uri, method);
         }
 
         /// <summary>
@@ -430,8 +441,6 @@ namespace Cyaim.RTSPClient
         /// <returns></returns>
         public async Task<RTSPResponse> Setup(string channelUri, string transport, bool useBackchannel)
         {
-            Random random = new Random();
-
             RTSPRequest request = new RTSPRequest()
             {
                 Method = "SETUP",
@@ -453,21 +462,7 @@ namespace Cyaim.RTSPClient
             {
                 case "401":
                     {
-                        //需要授权
-                        string realm = "RTSP SERVER";
-                        string nonce = "3e1456b5a39d3b47f90cd2c149b1e24d";
-
-                        var auth = res.Headers.Where(x => x.Key == "WWW-Authenticate").FirstOrDefault();
-                        // Digest realm="RTSP SERVER",nonce="3e1456b5a39d3b47f90cd2c149b1e24d",stale="FALSE"
-
-                        if (auth.Value.IndexOf("Digest") != 0)
-                        {
-                            throw new Exception("Server auth mode not Digest");
-                        }
-
-                        GetDigestParams(ref realm, ref nonce, auth.Value);
-                        //"rtsp://192.168.1.127:554/1/1"
-                        request.Authorization = AuthorizationDigest(UserName, Password, request.URI, realm, nonce, request.Method);
+                        await UpateAuthorization(res, request.URI, request.Method);
 
                         request.CSeq = NewCSeq;
 
