@@ -340,6 +340,8 @@ namespace Cyaim.RTSPClient
                         {
                             Authorization = request.Authorization;
                             SDP = new SDP(response.Response);
+                            UserName = username;
+                            Password = password;
                         }
 
                     }
