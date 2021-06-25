@@ -1,5 +1,6 @@
 ﻿using Cyaim.RTSPClient.Common;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -21,7 +22,7 @@ namespace Cyaim.RTSPClient
         /// 请求结果响应
         /// K：CSeq,V:result
         /// </summary>
-        private Dictionary<int, RTSPResponse> requestResults { get; set; } = new Dictionary<int, RTSPResponse>();
+        private ConcurrentDictionary<int, RTSPResponse> requestResults { get; set; } = new ConcurrentDictionary<int, RTSPResponse>();
 
         public Uri Uri { get; private set; }
 
@@ -42,6 +43,10 @@ namespace Cyaim.RTSPClient
         public string UserName { get; set; }
 
         public string Password { get; set; }
+
+        public string Realm { get; set; }
+
+        public string Nonce { get; set; }
 
 
         public string Authorization { get; set; }
@@ -71,9 +76,8 @@ namespace Cyaim.RTSPClient
         /// Connect server
         /// </summary>
         /// <param name="url">rtsp://192.168.1.127:554</param>
-        /// <param name="accetpTask"></param>
         /// <returns></returns>
-        public static RTSPSession Connect(string url, Task<TcpClient> accetpTask = null)
+        public static RTSPSession Connect(string url)
         {
             try
             {
@@ -90,6 +94,17 @@ namespace Cyaim.RTSPClient
             {
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Reconnect tcp
+        /// </summary>
+        /// <returns></returns>
+        public async Task ReConnect()
+        {
+            client.Close();
+
+            await client.ConnectAsync(Uri.Host, Uri.Port);
         }
 
         /// <summary>
@@ -121,8 +136,8 @@ namespace Cyaim.RTSPClient
 
                     RTSPResponse response = new RTSPResponse(msg, raw);
 
-                    requestResults.Remove(response.CSeq);
-                    requestResults.Add(response.CSeq, response);
+                    requestResults.TryRemove(response.CSeq, out _);
+                    requestResults.TryAdd(response.CSeq, response);
 
                     //tcpStream.Flush();
 
@@ -240,7 +255,6 @@ namespace Cyaim.RTSPClient
                         if (WaitResponseTimeout != 0 && stopwatch.ElapsedMilliseconds > WaitResponseTimeout)
                         {
                             throw new TimeoutException($"Get data timeout,use time {stopwatch.ElapsedMilliseconds} ms.");
-                            return null;
                         }
 
                         hasResult = requestResults.TryGetValue(cseq, out RTSPResponse response);
@@ -329,8 +343,15 @@ namespace Cyaim.RTSPClient
                         }
 
                         GetDigestParams(ref realm, ref nonce, auth.Value);
+
+                        UserName = username;
+                        Password = password;
+                        Realm = realm;
+                        Nonce = nonce;
+
                         //"rtsp://192.168.1.127:554/1/1"
-                        request.Authorization = AuthorizationDigest(username, password, uri, realm, nonce, method);
+                        UpdateAuthorization(uri, method);
+                        //request.Authorization = AuthorizationDigest(username, password, uri, realm, nonce, method);
 
                         request.CSeq = NewCSeq;
 
@@ -340,8 +361,7 @@ namespace Cyaim.RTSPClient
                         {
                             Authorization = request.Authorization;
                             SDP = new SDP(response.Response);
-                            UserName = username;
-                            Password = password;
+
                         }
 
                     }
@@ -372,66 +392,33 @@ namespace Cyaim.RTSPClient
             return response;
         }
 
-        public static void GetDigestParams(ref string realm, ref string nonce, string authHeader)
-        {
-            string[] authVal = authHeader.Remove(0, 7).Split(',');
-            //realm="RTSP SERVER"
-            foreach (var item in authVal)
-            {
-                int splitIndex = item.IndexOf('=');
-                string k = item.Substring(0, splitIndex).Trim();
-                string v = item.Substring(splitIndex + 1, item.Length - splitIndex - 1).TrimStart('"').TrimEnd('"');
-
-                switch (k)
-                {
-                    case "realm":
-                        realm = v;
-                        break;
-                    case "nonce":
-                        nonce = v;
-                        break;
-                    default:
-                        break;
-                }
-            }
-        }
-
-        public static string AuthorizationDigest(string username, string password, string uri, string realm, string nonce, string method)
-        {
-            string m1 = $@"{username}:{realm}:{password}".Md532().ToLower();
-            string m2 = $@"{method}:{uri}".Md532().ToLower();
-            string dig = $@"{m1}:{nonce}:{m2}".Md532().ToLower();
-
-            return $@"Digest username=""{username}"", realm=""{realm}"", nonce=""{nonce}"", uri=""{uri}"", response=""{dig}""";
-        }
-
-        public async Task UpdateAuthorization(string authHeader, string uri, string method)
+        /// <summary>
+        /// Update authorization
+        /// </summary>
+        /// <param name="uri"></param>
+        /// <param name="method"></param>
+        /// <returns></returns>
+        public void UpdateAuthorization(string uri, string method)
         {
             //需要授权
-            //var auth = response.Headers.Where(x => x.Key == "WWW-Authenticate").FirstOrDefault();
-            // Digest realm="RTSP SERVER",nonce="3e1456b5a39d3b47f90cd2c149b1e24d",stale="FALSE"
-
-            if (authHeader.IndexOf("Digest") != 0)
-            {
-                throw new Exception("Server auth mode not Digest");
-            }
-
-            string realm = string.Empty;
-            string nonce = string.Empty;
-
-
-            GetDigestParams(ref realm, ref nonce, authHeader);
             //"rtsp://192.168.1.127:554/1/1"
-            this.Authorization = AuthorizationDigest(UserName, Password, uri, realm, nonce, method);
+            this.Authorization = AuthorizationDigest(UserName, Password, uri, Realm, Nonce, method);
         }
 
-        public async Task UpateAuthorization(RTSPResponse response, string uri, string method)
+        /// <summary>
+        /// Update authorization by response
+        /// </summary>
+        /// <param name="response"></param>
+        /// <param name="uri"></param>
+        /// <param name="method"></param>
+        /// <returns></returns>
+        public void UpdateAuthorization(RTSPResponse response, string uri, string method)
         {
             //需要授权
             var auth = response.Headers.Where(x => x.Key == "WWW-Authenticate").FirstOrDefault();
             // Digest realm="RTSP SERVER",nonce="3e1456b5a39d3b47f90cd2c149b1e24d",stale="FALSE"
 
-            await UpdateAuthorization(auth.Value, uri, method);
+            UpdateAuthorization(uri, method);
         }
 
         /// <summary>
@@ -443,6 +430,7 @@ namespace Cyaim.RTSPClient
         /// <returns></returns>
         public async Task<RTSPResponse> Setup(string channelUri, string transport, bool useBackchannel)
         {
+
             RTSPRequest request = new RTSPRequest()
             {
                 Method = "SETUP",
@@ -458,25 +446,10 @@ namespace Cyaim.RTSPClient
                 request.Require = OnvifBackChannel;
             }
 
+            UpdateAuthorization(Uri.AbsoluteUri, request.Method);
+            request.Authorization = this.Authorization;
+
             RTSPResponse res = await SendAsync(request);
-
-            switch (res.StatusCode)
-            {
-                case "401":
-                    {
-                        await UpateAuthorization(res, request.URI, request.Method);
-
-                        request.CSeq = NewCSeq;
-                        request.Authorization = this.Authorization;
-
-                        //Authorization: Digest username=""admin"", realm=""RTSP SERVER"", nonce=""3e1456b5a39d3b47f90cd2c149b1e24d"", uri=""rtsp://192.168.1.127:554/1/1"", response=""8ec02e57386ea9fcd3bf0bb997da1fb8""
-                        res = await SendAsync(request);
-
-                    }
-                    break;
-                default:
-                    break;
-            }
 
             UpdateTimeout(res);
 
@@ -510,23 +483,10 @@ namespace Cyaim.RTSPClient
             }
 
 
+            UpdateAuthorization(Uri.AbsoluteUri, request.Method);
+            request.Authorization = this.Authorization;
+
             RTSPResponse res = await SendAsync(request);
-            switch (res.StatusCode)
-            {
-                case "401":
-                    {
-                        await UpateAuthorization(res, request.URI, request.Method);
-
-                        request.CSeq = NewCSeq;
-                        request.Authorization = this.Authorization;
-
-                        //Authorization: Digest username=""admin"", realm=""RTSP SERVER"", nonce=""3e1456b5a39d3b47f90cd2c149b1e24d"", uri=""rtsp://192.168.1.127:554/1/1"", response=""8ec02e57386ea9fcd3bf0bb997da1fb8""
-                        res = await SendAsync(request);
-                    }
-                    break;
-                default:
-                    break;
-            }
 
             UpdateTimeout(res);
 
@@ -557,6 +517,9 @@ namespace Cyaim.RTSPClient
                 request.Require = OnvifBackChannel;
             }
 
+            UpdateAuthorization(Uri.AbsoluteUri, request.Method);
+            request.Authorization = this.Authorization;
+
             return await SendAsync(request);
         }
 
@@ -567,9 +530,10 @@ namespace Cyaim.RTSPClient
         /// <param name="fps"></param>
         /// <param name="sampleRate"></param>
         /// <param name="ssrc"></param>
+        /// <param name="channel"></param>
         /// <param name="progress">callback;v1:send progress,v2:packet time</param>
         /// <returns></returns>
-        public async Task PlayAudio_G711A(byte[] audio, int fps, int sampleRate, long ssrc, Action<decimal, long> progress = null)
+        public async Task PlayAudio_G711A(byte[] audio, int fps, int sampleRate, long ssrc, byte channel = 0x00, Action<decimal, long> progress = null)
         {
             //int packSecLen = 320;
 
@@ -597,7 +561,7 @@ namespace Cyaim.RTSPClient
                 long timestamp = Timestamp.GetNowTimestamp();
                 byte[] packet = new byte[packetHeaderLen + packSecLen];
                 packet[0] = 0x24;// Magic
-                packet[1] = 0x00;// Channel 
+                packet[1] = channel;// Channel 
                 packet[2] = (byte)((rtpPackLen % (0xffff + 1)) / (0xff + 1));// Length1
                 packet[3] = (byte)((rtpPackLen % (0xffff + 1)) % (0xff + 1));// Length2
                 packet[4] = 0x80;//CSRC False 0x80
@@ -636,6 +600,58 @@ namespace Cyaim.RTSPClient
                 //Console.Error.WriteLine($"播放进度：{i}/{ audioLen / packSecLen}\r\n");
             }
         }
+
+        #region Auth method
+        /// <summary>
+        /// Get digest params by WWW-Authenticate
+        /// </summary>
+        /// <param name="realm"></param>
+        /// <param name="nonce"></param>
+        /// <param name="authHeader"></param>
+        public static void GetDigestParams(ref string realm, ref string nonce, string authHeader)
+        {
+            string[] authVal = authHeader.Remove(0, 7).Split(',');
+            //realm="RTSP SERVER"
+            foreach (var item in authVal)
+            {
+                int splitIndex = item.IndexOf('=');
+                string k = item.Substring(0, splitIndex).Trim();
+                string v = item.Substring(splitIndex + 1, item.Length - splitIndex - 1).TrimStart('"').TrimEnd('"');
+
+                switch (k)
+                {
+                    case "realm":
+                        realm = v;
+                        break;
+                    case "nonce":
+                        nonce = v;
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Get Digest authorization
+        /// </summary>
+        /// <param name="username"></param>
+        /// <param name="password"></param>
+        /// <param name="uri"></param>
+        /// <param name="realm"></param>
+        /// <param name="nonce"></param>
+        /// <param name="method"></param>
+        /// <returns></returns>
+        public static string AuthorizationDigest(string username, string password, string uri, string realm, string nonce, string method)
+        {
+            string m1 = $@"{username}:{realm}:{password}".Md532().ToLower();
+            string m2 = $@"{method}:{uri}".Md532().ToLower();
+            string dig = $@"{m1}:{nonce}:{m2}".Md532().ToLower();
+
+            return $@"Digest username=""{username}"", realm=""{realm}"", nonce=""{nonce}"", uri=""{uri}"", response=""{dig}""";
+        }
+
+        #endregion
 
         #region Dispose
         private bool disposedValue;

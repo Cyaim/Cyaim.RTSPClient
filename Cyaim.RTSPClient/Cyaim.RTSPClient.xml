@@ -363,6 +363,13 @@
             <param name="useBackchannel"></param>
             <returns></returns>
         </member>
+        <member name="M:Cyaim.RTSPClient.RTSPSession.Option(System.String)">
+            <summary>
+            Option
+            </summary>
+            <param name="uri"></param>
+            <returns></returns>
+        </member>
         <member name="M:Cyaim.RTSPClient.RTSPSession.Setup(System.String,System.String,System.Boolean)">
             <summary>
             Setup device channel
@@ -389,7 +396,7 @@
             <param name="useBackchannel"></param>
             <returns></returns>
         </member>
-        <member name="M:Cyaim.RTSPClient.RTSPSession.PlayAudio_G711A(System.Byte[],System.Int32,System.Int32,System.Int64,System.Action{System.Decimal,System.Int64})">
+        <member name="M:Cyaim.RTSPClient.RTSPSession.PlayAudio_G711A(System.Byte[],System.Int32,System.Int32,System.Int64,System.Byte,System.Action{System.Decimal,System.Int64})">
             <summary>
             Send G711A format audio to device.
             </summary>
@@ -397,6 +404,7 @@
             <param name="fps"></param>
             <param name="sampleRate"></param>
             <param name="ssrc"></param>
+            <param name="channel"></param>
             <param name="progress">callback;v1:send progress,v2:packet time</param>
             <returns></returns>
         </member>
