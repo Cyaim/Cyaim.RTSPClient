@@ -62,16 +62,29 @@ namespace Cyaim.RTSPClient
         /// </summary>
         public int WaitResponseTimeout { get; set; }
 
+        /// <summary>
+        /// Connect server
+        /// </summary>
+        /// <param name="url">rtsp://192.168.1.127:554</param>
+        /// <param name="accetpTask"></param>
+        /// <returns></returns>
         public static RTSPSession Connect(string url, Task<TcpClient> accetpTask = null)
         {
-            Uri uri = new Uri(url);
+            try
+            {
+                Uri uri = new Uri(url);
 
-            RTSPSession session = new RTSPSession() { Uri = uri };
-            session.client = new TcpClient(uri.Host, uri.Port);
+                RTSPSession session = new RTSPSession() { Uri = uri };
+                session.client = new TcpClient(uri.Host, uri.Port);
 
-            session.AcceptHandler = session.Accept();
+                session.AcceptHandler = session.Accept();
 
-            return session;
+                return session;
+            }
+            catch (Exception)
+            {
+                throw;
+            }
         }
 
         /// <summary>
@@ -93,6 +106,12 @@ namespace Cyaim.RTSPClient
 
                     int streamCount = await tcpStream.ReadAsync(raw, 0, raw.Length);
 
+                    if (streamCount == 0)
+                    {
+                        Thread.Sleep(1);
+                        continue;
+                    }
+
                     string msg = Encoding.Default.GetString(raw, 0, streamCount);
 
                     RTSPResponse response = new RTSPResponse(msg, raw);
@@ -107,7 +126,7 @@ namespace Cyaim.RTSPClient
                 {
                     this.Exception = ex;
 
-                    //服务器断链
+                    // server disconnect
                     break;
                 }
             }
@@ -116,23 +135,43 @@ namespace Cyaim.RTSPClient
 
         #region Send
 
+        /// <summary>
+        /// async send data
+        /// </summary>
+        /// <param name="bin"></param>
+        /// <returns></returns>
         public async Task SendAsync(byte[] bin)
         {
             await tcpStream.WriteAsync(bin, 0, bin.Length);
             //tcpStream.Flush();
         }
 
+        /// <summary>
+        /// send data
+        /// </summary>
+        /// <param name="bin"></param>
         public void Send(byte[] bin)
         {
             tcpStream.Write(bin, 0, bin.Length);
         }
 
+        /// <summary>
+        /// send string data.
+        /// </summary>
+        /// <param name="data"></param>
+        /// <param name="encoding"></param>
+        /// <returns></returns>
         public async Task Send(string data, Encoding encoding)
         {
             byte[] bin = encoding.GetBytes(data);
             await SendAsync(bin);
         }
 
+        /// <summary>
+        /// send RTSP control signalling
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
         public async Task<RTSPResponse> SendAsync(RTSPRequest request)
         {
             string req = RTSPRequest.GetRequest(request);
@@ -150,16 +189,29 @@ namespace Cyaim.RTSPClient
         /// <param name="res"></param>
         private void UpdateTimeout(RTSPResponse res)
         {
-            string sessionVal = res.Headers.Where(x => x.Key == "Session").FirstOrDefault().Value;
-            if (string.IsNullOrEmpty(sessionVal))
+            try
             {
-                string timeout = sessionVal.Split(';').Where(x => x.IndexOf("timeout=") > -1).FirstOrDefault() ?? string.Empty;
-                timeout = timeout.Replace("timeout=", "");
-                bool canTime = Int32.TryParse(timeout, out int time);
-                if (canTime)
+                string sessionVal = res.Headers.Where(x => x.Key == "Session").FirstOrDefault().Value;
+                if (string.IsNullOrEmpty(sessionVal))
                 {
-                    Timeout = time;
+                    string[] sessionParms = sessionVal.Split(';');
+                    if (sessionParms.Length > 1)
+                    {
+                        this.Session = sessionParms[0];
+                    }
+
+                    string timeout = sessionParms.Where(x => x.IndexOf("timeout=") > -1).FirstOrDefault() ?? string.Empty;
+                    timeout = timeout.Replace("timeout=", "");
+                    bool canTime = Int32.TryParse(timeout, out int time);
+                    if (canTime)
+                    {
+                        Timeout = time;
+                    }
                 }
+            }
+            catch
+            {
+
             }
         }
 
@@ -170,28 +222,38 @@ namespace Cyaim.RTSPClient
         /// <returns></returns>
         public async Task<RTSPResponse> GetResponse(int cseq)
         {
-            RTSPResponse res = await Task.Run<RTSPResponse>(() =>
+            try
             {
-                Stopwatch stopwatch = new Stopwatch();
-                bool hasResult = false;
-                stopwatch.Start();
-                while (true)
+                RTSPResponse res = await Task.Run<RTSPResponse>(() =>
                 {
-                    if (WaitResponseTimeout != 0 && stopwatch.ElapsedMilliseconds > WaitResponseTimeout)
+                    Stopwatch stopwatch = new Stopwatch();
+                    bool hasResult = false;
+                    stopwatch.Start();
+                    while (true)
                     {
-                        return null;
+                        if (WaitResponseTimeout != 0 && stopwatch.ElapsedMilliseconds > WaitResponseTimeout)
+                        {
+                            throw new TimeoutException($"Get data timeout,use time {stopwatch.ElapsedMilliseconds} ms.");
+                            return null;
+                        }
+
+                        hasResult = requestResults.TryGetValue(cseq, out RTSPResponse response);
+
+                        if (hasResult)
+                        {
+                            return response;
+                        }
                     }
+                });
 
-                    hasResult = requestResults.TryGetValue(cseq, out RTSPResponse response);
+                return res;
+            }
+            catch (Exception)
+            {
 
-                    if (hasResult)
-                    {
-                        return response;
-                    }
-                }
-            });
+                throw;
+            }
 
-            return res;
         }
 
         /// <summary>
@@ -264,7 +326,7 @@ namespace Cyaim.RTSPClient
                         foreach (var item in authVal)
                         {
                             int splitIndex = item.IndexOf('=');
-                            string k = item.Substring(0, splitIndex);
+                            string k = item.Substring(0, splitIndex).Trim();
                             string v = item.Substring(splitIndex + 1, item.Length - splitIndex - 1).TrimStart('"').TrimEnd('"');
 
                             switch (k)
@@ -330,7 +392,7 @@ namespace Cyaim.RTSPClient
         /// <param name="transport"></param>
         /// <param name="useBackchannel"></param>
         /// <returns></returns>
-        public async Task<RTSPResponse> Setup(string channelUri, string transport, bool useBackchannel)
+        public async Task<RTSPResponse> Setup(string channelUri, string transport, bool useBackchannel, string session)
         {
             Random random = new Random();
 
@@ -340,7 +402,6 @@ namespace Cyaim.RTSPClient
                 URI = Uri.AbsoluteUri + channelUri,
                 Version = "RTSP/1.0",
                 CSeq = NewCSeq,
-                Session = this.Session = random.Next(100000, 999999).ToString(),
                 Transport = transport,
                 Authorization = Authorization,
                 //Require = "www.onvif.org/ver20/backchannel"
@@ -351,6 +412,7 @@ namespace Cyaim.RTSPClient
             }
 
             RTSPResponse res = await SendAsync(request);
+
 
             UpdateTimeout(res);
 
@@ -517,7 +579,7 @@ namespace Cyaim.RTSPClient
                         tcpStream.Flush();
                         tcpStream.Close();
                         client.Close();
-                       
+
 
                     }
 
