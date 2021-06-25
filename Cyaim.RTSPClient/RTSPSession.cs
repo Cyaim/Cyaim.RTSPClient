@@ -467,6 +467,7 @@ namespace Cyaim.RTSPClient
                         await UpateAuthorization(res, request.URI, request.Method);
 
                         request.CSeq = NewCSeq;
+                        request.Authorization = this.Authorization;
 
                         //Authorization: Digest username=""admin"", realm=""RTSP SERVER"", nonce=""3e1456b5a39d3b47f90cd2c149b1e24d"", uri=""rtsp://192.168.1.127:554/1/1"", response=""8ec02e57386ea9fcd3bf0bb997da1fb8""
                         res = await SendAsync(request);
@@ -491,8 +492,6 @@ namespace Cyaim.RTSPClient
         /// <returns></returns>
         public async Task<RTSPResponse> Play(string channelUri, string range, bool useBackchannel)
         {
-            Random random = new Random();
-
             RTSPRequest request = new RTSPRequest()
             {
                 Method = "PLAY",
@@ -512,6 +511,22 @@ namespace Cyaim.RTSPClient
 
 
             RTSPResponse res = await SendAsync(request);
+            switch (res.StatusCode)
+            {
+                case "401":
+                    {
+                        await UpateAuthorization(res, request.URI, request.Method);
+
+                        request.CSeq = NewCSeq;
+                        request.Authorization = this.Authorization;
+
+                        //Authorization: Digest username=""admin"", realm=""RTSP SERVER"", nonce=""3e1456b5a39d3b47f90cd2c149b1e24d"", uri=""rtsp://192.168.1.127:554/1/1"", response=""8ec02e57386ea9fcd3bf0bb997da1fb8""
+                        res = await SendAsync(request);
+                    }
+                    break;
+                default:
+                    break;
+            }
 
             UpdateTimeout(res);
 
