@@ -39,6 +39,11 @@ namespace Cyaim.RTSPClient
 
         public Task AcceptHandler { get; set; }
 
+        public string UserName { get; set; }
+
+        public string Password { get; set; }
+
+
         public string Authorization { get; set; }
 
         public SDP SDP { get; set; }
@@ -322,33 +327,12 @@ namespace Cyaim.RTSPClient
                         {
                             throw new Exception("Server auth mode not Digest");
                         }
-                        string[] authVal = auth.Value.Remove(0, 7).Split(',');
-                        //realm="RTSP SERVER"
-                        foreach (var item in authVal)
-                        {
-                            int splitIndex = item.IndexOf('=');
-                            string k = item.Substring(0, splitIndex).Trim();
-                            string v = item.Substring(splitIndex + 1, item.Length - splitIndex - 1).TrimStart('"').TrimEnd('"');
 
-                            switch (k)
-                            {
-                                case "realm":
-                                    realm = v;
-                                    break;
-                                case "nonce":
-                                    nonce = v;
-                                    break;
-                                default:
-                                    break;
-                            }
-                        }
+                        GetDigestParams(ref realm, ref nonce, auth.Value);
                         //"rtsp://192.168.1.127:554/1/1"
-                        string m1 = $@"{username}:{realm}:{password}".Md532().ToLower();
-                        string m2 = $@"{method}:{uri}".Md532().ToLower();
-                        string dig = $@"{m1}:{nonce}:{m2}".Md532().ToLower();
+                        request.Authorization = AuthorizationDigest(username, password, uri, realm, nonce, method);
 
                         request.CSeq = NewCSeq;
-                        request.Authorization = $@"Digest username=""{username}"", realm=""{realm}"", nonce=""{nonce}"", uri=""{uri}"", response=""{dig}""";
 
                         //Authorization: Digest username=""admin"", realm=""RTSP SERVER"", nonce=""3e1456b5a39d3b47f90cd2c149b1e24d"", uri=""rtsp://192.168.1.127:554/1/1"", response=""8ec02e57386ea9fcd3bf0bb997da1fb8""
                         response = await SendAsync(request);
@@ -386,6 +370,57 @@ namespace Cyaim.RTSPClient
             return response;
         }
 
+        public static void GetDigestParams(ref string realm, ref string nonce, string authHeader)
+        {
+            string[] authVal = authHeader.Remove(0, 7).Split(',');
+            //realm="RTSP SERVER"
+            foreach (var item in authVal)
+            {
+                int splitIndex = item.IndexOf('=');
+                string k = item.Substring(0, splitIndex).Trim();
+                string v = item.Substring(splitIndex + 1, item.Length - splitIndex - 1).TrimStart('"').TrimEnd('"');
+
+                switch (k)
+                {
+                    case "realm":
+                        realm = v;
+                        break;
+                    case "nonce":
+                        nonce = v;
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+        public static string AuthorizationDigest(string username, string password, string uri, string realm, string nonce, string method)
+        {
+            string m1 = $@"{username}:{realm}:{password}".Md532().ToLower();
+            string m2 = $@"{method}:{uri}".Md532().ToLower();
+            string dig = $@"{m1}:{nonce}:{m2}".Md532().ToLower();
+
+            return $@"Digest username=""{username}"", realm=""{realm}"", nonce=""{nonce}"", uri=""{uri}"", response=""{dig}""";
+        }
+
+        public void UpateAuthorization(RTSPResponse response)
+        {
+            var auth = response.Headers.Where(x => x.Key == "WWW-Authenticate").FirstOrDefault();
+            // Digest realm="RTSP SERVER",nonce="3e1456b5a39d3b47f90cd2c149b1e24d",stale="FALSE"
+
+            if (auth.Value.IndexOf("Digest") != 0)
+            {
+                throw new Exception("Server auth mode not Digest");
+            }
+
+            string realm = string.Empty;
+            string nonce = string.Empty;
+
+            GetDigestParams(ref realm, ref nonce, auth);
+            //"rtsp://192.168.1.127:554/1/1"
+            this.Authorization = AuthorizationDigest(UserName, Password, uri, realm, nonce, method);
+        }
+
         /// <summary>
         /// Setup device channel
         /// </summary>
@@ -414,6 +449,36 @@ namespace Cyaim.RTSPClient
 
             RTSPResponse res = await SendAsync(request);
 
+            switch (res.StatusCode)
+            {
+                case "401":
+                    {
+                        //需要授权
+                        string realm = "RTSP SERVER";
+                        string nonce = "3e1456b5a39d3b47f90cd2c149b1e24d";
+
+                        var auth = res.Headers.Where(x => x.Key == "WWW-Authenticate").FirstOrDefault();
+                        // Digest realm="RTSP SERVER",nonce="3e1456b5a39d3b47f90cd2c149b1e24d",stale="FALSE"
+
+                        if (auth.Value.IndexOf("Digest") != 0)
+                        {
+                            throw new Exception("Server auth mode not Digest");
+                        }
+
+                        GetDigestParams(ref realm, ref nonce, auth.Value);
+                        //"rtsp://192.168.1.127:554/1/1"
+                        request.Authorization = AuthorizationDigest(UserName, Password, request.URI, realm, nonce, request.Method);
+
+                        request.CSeq = NewCSeq;
+
+                        //Authorization: Digest username=""admin"", realm=""RTSP SERVER"", nonce=""3e1456b5a39d3b47f90cd2c149b1e24d"", uri=""rtsp://192.168.1.127:554/1/1"", response=""8ec02e57386ea9fcd3bf0bb997da1fb8""
+                        res = await SendAsync(request);
+
+                    }
+                    break;
+                default:
+                    break;
+            }
 
             UpdateTimeout(res);
 
