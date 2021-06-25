@@ -297,12 +297,17 @@
             Wait response result timeout millisecond.
             </summary>
         </member>
-        <member name="M:Cyaim.RTSPClient.RTSPSession.Connect(System.String,System.Threading.Tasks.Task{System.Net.Sockets.TcpClient})">
+        <member name="M:Cyaim.RTSPClient.RTSPSession.Connect(System.String)">
             <summary>
             Connect server
             </summary>
             <param name="url">rtsp://192.168.1.127:554</param>
-            <param name="accetpTask"></param>
+            <returns></returns>
+        </member>
+        <member name="M:Cyaim.RTSPClient.RTSPSession.ReConnect">
+            <summary>
+            Reconnect tcp
+            </summary>
             <returns></returns>
         </member>
         <member name="M:Cyaim.RTSPClient.RTSPSession.Accept">
@@ -363,11 +368,21 @@
             <param name="useBackchannel"></param>
             <returns></returns>
         </member>
-        <member name="M:Cyaim.RTSPClient.RTSPSession.Option(System.String)">
+        <member name="M:Cyaim.RTSPClient.RTSPSession.UpdateAuthorization(System.String,System.String)">
             <summary>
-            Option
+            Update authorization
             </summary>
             <param name="uri"></param>
+            <param name="method"></param>
+            <returns></returns>
+        </member>
+        <member name="M:Cyaim.RTSPClient.RTSPSession.UpdateAuthorization(Cyaim.RTSPClient.RTSPResponse,System.String,System.String)">
+            <summary>
+            Update authorization by response
+            </summary>
+            <param name="response"></param>
+            <param name="uri"></param>
+            <param name="method"></param>
             <returns></returns>
         </member>
         <member name="M:Cyaim.RTSPClient.RTSPSession.Setup(System.String,System.String,System.Boolean)">
@@ -406,6 +421,26 @@
             <param name="ssrc"></param>
             <param name="channel"></param>
             <param name="progress">callback;v1:send progress,v2:packet time</param>
+            <returns></returns>
+        </member>
+        <member name="M:Cyaim.RTSPClient.RTSPSession.GetDigestParams(System.String@,System.String@,System.String)">
+            <summary>
+            Get digest params by WWW-Authenticate
+            </summary>
+            <param name="realm"></param>
+            <param name="nonce"></param>
+            <param name="authHeader"></param>
+        </member>
+        <member name="M:Cyaim.RTSPClient.RTSPSession.AuthorizationDigest(System.String,System.String,System.String,System.String,System.String,System.String)">
+            <summary>
+            Get Digest authorization
+            </summary>
+            <param name="username"></param>
+            <param name="password"></param>
+            <param name="uri"></param>
+            <param name="realm"></param>
+            <param name="nonce"></param>
+            <param name="method"></param>
             <returns></returns>
         </member>
         <member name="P:Cyaim.RTSPClient.SDP.v">

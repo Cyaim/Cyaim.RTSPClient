@@ -535,6 +535,22 @@ namespace Cyaim.RTSPClient
         /// <returns></returns>
         public async Task PlayAudio_G711A(byte[] audio, int fps, int sampleRate, long ssrc, byte channel = 0x00, Action<decimal, long> progress = null)
         {
+            await PlayAudio_G711(audio, fps, sampleRate, RTPPayloadType.PCMA, ssrc, channel, progress);
+        }
+
+        /// <summary>
+        /// Send G711A format audio to device.
+        /// </summary>
+        /// <param name="audio"></param>
+        /// <param name="fps"></param>
+        /// <param name="sampleRate"></param>
+        /// <param name="g711Type"></param>
+        /// <param name="ssrc"></param>
+        /// <param name="channel"></param>
+        /// <param name="progress">callback;v1:send progress,v2:packet time</param>
+        /// <returns></returns>
+        public async Task PlayAudio_G711(byte[] audio, int fps, int sampleRate, RTPPayloadType g711Type, long ssrc, byte channel = 0x00, Action<decimal, long> progress = null)
+        {
             //int packSecLen = 320;
 
             // 数据包长度
@@ -565,7 +581,7 @@ namespace Cyaim.RTSPClient
                 packet[2] = (byte)((rtpPackLen % (0xffff + 1)) / (0xff + 1));// Length1
                 packet[3] = (byte)((rtpPackLen % (0xffff + 1)) % (0xff + 1));// Length2
                 packet[4] = 0x80;//CSRC False 0x80
-                packet[5] = (byte)RTPPayloadType.PCMA;//Payload type:ITU-T G.711 PCMU(0x00)
+                packet[5] = (byte)g711Type;//Payload type:ITU-T G.711 PCMU(0x00)
                 packet[6] = (byte)(i / (0xff + 1));
                 packet[7] = (byte)(i % (0xff + 1));
                 packet[8] = (byte)((timestamp / (0xffff + 1)) / (0xff + 1));
@@ -600,6 +616,7 @@ namespace Cyaim.RTSPClient
                 //Console.Error.WriteLine($"播放进度：{i}/{ audioLen / packSecLen}\r\n");
             }
         }
+
 
         #region Auth method
         /// <summary>
