@@ -9,10 +9,20 @@ CSharp RTSP client.
 ```C#
 RTSPSession session = RTSPSession.Connect("rtsp://192.168.1.127:554");
 await session.LoginDigest("admin", "admin", "rtsp://192.168.1.127:554/1/1", true);
-await session.Setup("/trackID=3", "RTP/AVP/TCP;unicast;interleaved=0-1", true);
-await session.Play("/trackID=3", "npt=0.000-", true);
+await session.Setup("1/1/trackID=3", "RTP/AVP/TCP;unicast", true);
+await session.Play("1/1", "npt=0.000-", true);
 byte[] audio = File.ReadAllBytes(@"../../Voice/out1_8k.g711a");
-await session.PlayAudio_G711A(audio, 25, 8000, 255);
+
+string[] transport = response.Headers.FirstOrDefault(x => x.Key == "Transport").Value.Split(";");
+string interleaved = transport.FirstOrDefault(x => x.IndexOf("interleaved") > -1)?.Replace("interleaved=", string.Empty)?.Split('-').FirstOrDefault();
+string ssrc = transport?.FirstOrDefault(x => x.IndexOf("ssrc") > -1);
+if (!string.IsNullOrEmpty(ssrc))
+{
+    ssrc = ssrc.Replace("ssrc=", string.Empty);
+}
+long ssrc2 = long.Parse(ssrc, System.Globalization.NumberStyles.HexNumber);
+byte channel = Convert.ToByte(interleaved);
+await session.PlayAudio_G711A(audio, 25, 8000, ssrc2, channel);
 ```
 
 ## Other about ffmpeg
