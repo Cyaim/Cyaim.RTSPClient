@@ -193,7 +193,7 @@ namespace Cyaim.RTSPClient
             try
             {
                 string sessionVal = res.Headers.Where(x => x.Key == "Session").FirstOrDefault().Value;
-                if (string.IsNullOrEmpty(sessionVal))
+                if (!string.IsNullOrEmpty(sessionVal))
                 {
                     string[] sessionParms = sessionVal.Split(';');
                     if (sessionParms.Length > 1)
