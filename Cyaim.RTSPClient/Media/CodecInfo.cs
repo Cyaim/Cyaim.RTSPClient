@@ -145,30 +145,12 @@ namespace Cyaim.RTSPClient.Media
 
         private static VideoCodec ParseVideoCodec(string name)
         {
-            switch (name)
-            {
-                case "H264": return VideoCodec.H264;
-                case "H265": return VideoCodec.H265;
-                case "MP4V-ES": return VideoCodec.MPEG4;
-                case "JPEG": return VideoCodec.MJPEG;
-                case "VP8": return VideoCodec.VP8;
-                case "VP9": return VideoCodec.VP9;
-                default: return VideoCodec.Unknown;
-            }
+            return Common.RTPPayloadTypeHelper.GetVideoCodec(name);
         }
 
         private static AudioCodec ParseAudioCodec(string name)
         {
-            switch (name)
-            {
-                case "PCMA": return AudioCodec.PCMA;
-                case "PCMU": return AudioCodec.PCMU;
-                case "G726": return AudioCodec.G726;
-                case "AAC": return AudioCodec.AAC;
-                case "OPUS": return AudioCodec.OPUS;
-                case "MPEG4-GENERIC": return AudioCodec.MPEG4_GENERIC;
-                default: return AudioCodec.Unknown;
-            }
+            return Common.RTPPayloadTypeHelper.GetAudioCodec(name);
         }
     }
 }

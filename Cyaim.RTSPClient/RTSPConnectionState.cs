@@ -108,16 +108,174 @@ namespace Cyaim.RTSPClient
     }
 
     /// <summary>
-    /// 音频编码类型
+    /// 音频编码类型 (RFC 3551 + 常见动态载荷)
     /// </summary>
     public enum AudioCodec
     {
         Unknown,
-        PCMA,    // G.711A
-        PCMU,    // G.711U
-        G726,
-        AAC,
-        OPUS,
-        MPEG4_GENERIC
+
+        // ===== RFC 3551 静态载荷类型 =====
+        
+        /// <summary>
+        /// G.711 μ-law (PCMU), 8kHz, 64kbps
+        /// </summary>
+        PCMU = 0,
+        
+        /// <summary>
+        /// GSM 06.10, 8kHz, 13kbps
+        /// </summary>
+        GSM = 3,
+        
+        /// <summary>
+        /// G.723.1, 8kHz, 5.3/6.3kbps
+        /// </summary>
+        G723 = 4,
+        
+        /// <summary>
+        /// DVI4, 8kHz, 32kbps
+        /// </summary>
+        DVI4_8K = 5,
+        
+        /// <summary>
+        /// DVI4, 16kHz, 64kbps
+        /// </summary>
+        DVI4_16K = 6,
+        
+        /// <summary>
+        /// LPC (Linear Predictive Coding), 8kHz
+        /// </summary>
+        LPC = 7,
+        
+        /// <summary>
+        /// G.711 A-law (PCMA), 8kHz, 64kbps
+        /// </summary>
+        PCMA = 8,
+        
+        /// <summary>
+        /// G.722, 16kHz, 48/56/64kbps
+        /// </summary>
+        G722 = 9,
+        
+        /// <summary>
+        /// L16 立体声, 44.1kHz
+        /// </summary>
+        L16_STEREO = 10,
+        
+        /// <summary>
+        /// L16 单声道, 44.1kHz
+        /// </summary>
+        L16_MONO = 11,
+        
+        /// <summary>
+        /// QCELP, 8kHz
+        /// </summary>
+        QCELP = 12,
+        
+        /// <summary>
+        /// Comfort Noise, 8kHz
+        /// </summary>
+        CN = 13,
+        
+        /// <summary>
+        /// MPEG-1/2 Audio (MPA), 90kHz
+        /// </summary>
+        MPA = 14,
+        
+        /// <summary>
+        /// G.728, 8kHz, 16kbps (LD-CELP)
+        /// </summary>
+        G728 = 15,
+        
+        /// <summary>
+        /// DVI4, 11.025kHz
+        /// </summary>
+        DVI4_11025 = 16,
+        
+        /// <summary>
+        /// DVI4, 22.05kHz
+        /// </summary>
+        DVI4_22050 = 17,
+        
+        /// <summary>
+        /// G.729, 8kHz, 8kbps (CS-ACELP)
+        /// </summary>
+        G729 = 18,
+
+        // ===== 常见动态载荷类型 (96-127) =====
+        
+        /// <summary>
+        /// G.726, 8kHz, 16/24/32/40kbps (ADPCM)
+        /// </summary>
+        G726 = 96,
+        
+        /// <summary>
+        /// AAC-LD (Low Delay), MPEG-4
+        /// </summary>
+        AAC_LD = 97,
+        
+        /// <summary>
+        /// AAC-ELD (Enhanced Low Delay)
+        /// </summary>
+        AAC_ELD = 98,
+        
+        /// <summary>
+        /// AAC (Generic), MPEG-4
+        /// </summary>
+        AAC = 99,
+        
+        /// <summary>
+        /// AMR (Adaptive Multi-Rate), 8kHz
+        /// </summary>
+        AMR = 100,
+        
+        /// <summary>
+        /// AMR-WB (Wideband), 16kHz
+        /// </summary>
+        AMR_WB = 101,
+        
+        /// <summary>
+        /// Opus, 48kHz (RFC 7587)
+        /// </summary>
+        OPUS = 102,
+        
+        /// <summary>
+        /// Vorbis (RFC 5215)
+        /// </summary>
+        VORBIS = 103,
+        
+        /// <summary>
+        /// Speex, 8/16/32kHz (RFC 5574)
+        /// </summary>
+        SPEEX = 104,
+        
+        /// <summary>
+        /// G.729.1, 8-32kHz (scalable)
+        /// </summary>
+        G7291 = 105,
+        
+        /// <summary>
+        /// AC-3 (Dolby Digital)
+        /// </summary>
+        AC3 = 106,
+        
+        /// <summary>
+        /// E-AC-3 (Dolby Digital Plus)
+        /// </summary>
+        EAC3 = 107,
+        
+        /// <summary>
+        /// DTS (Digital Theater Systems)
+        /// </summary>
+        DTS = 108,
+        
+        /// <summary>
+        /// MPEG-4 Generic
+        /// </summary>
+        MPEG4_GENERIC = 109,
+        
+        /// <summary>
+        /// FLAC (Free Lossless Audio Codec)
+        /// </summary>
+        FLAC = 110
     }
 }

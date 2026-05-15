@@ -5,3 +5,6 @@
 /.vs/Cyaim.RTSPClient
 /Cyaim.RTSPClient/bin/Debug
 /Cyaim.RTSPClient/obj
+
+# Sisyphus 工作计划
+.sisyphus/
