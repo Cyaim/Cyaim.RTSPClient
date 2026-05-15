@@ -1,21 +1,24 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
+    <TargetFrameworks>netstandard2.1;net10.0</TargetFrameworks>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
-    <Description>RTSP Client supports basic operation, onvif voice support G.711A.</Description>
+    <Description>C# RTSP客户端库，支持完整的RTSP协议、RTP/RTCP、H.264/H.265视频流、G.711音频流、ONVIF回传通道。</Description>
     <Copyright>Cyaim Studio</Copyright>
     <PackageProjectUrl>https://github.com/Cyaim/Cyaim.RTSPClient</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Cyaim/Cyaim.RTSPClient</RepositoryUrl>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
-    <AssemblyVersion>1.1.0.0</AssemblyVersion>
-    <FileVersion>1.1.0.0</FileVersion>
-    <Version>1.1.0</Version>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
-    <DocumentationFile>E:\WorkSpaces\2333\Cyaim.RTSPClient\Cyaim.RTSPClient\Cyaim.RTSPClient.xml</DocumentationFile>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <FileVersion>2.0.0.0</FileVersion>
+    <Version>2.0.0</Version>
+    <PackageTags>rtsp;rtp;rtcp;h264;h265;onvif;ip-camera;streaming</PackageTags>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CS0419</NoWarn>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
@@ -25,8 +28,9 @@
     </None>
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="Exceptions\" />
+  <!-- System.Threading.Channels is built into net10.0 but needs NuGet for netstandard2.1 -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
   </ItemGroup>
 
 </Project>

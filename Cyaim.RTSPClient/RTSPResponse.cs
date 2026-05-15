@@ -12,12 +12,13 @@ namespace Cyaim.RTSPClient
         /// <summary>
         /// Format rtsp control response;Read by line.
         /// </summary>
-        /// <param name="response"></param>
-        public RTSPResponse(string response, byte[] raw)
+        /// <param name="response">Response text</param>
+        /// <param name="raw">Raw bytes</param>
+        public RTSPResponse(string response, byte[]? raw)
         {
             this.Raw = raw;
 
-            if (string.IsNullOrEmpty(response) && raw != null)
+            if (string.IsNullOrEmpty(response))
             {
                 return;
             }
@@ -28,9 +29,12 @@ namespace Cyaim.RTSPClient
             }
 
             string[] res = resLine[0].Split(' ');
-            this.Version = res[0];
-            this.StatusCode = res[1];
-            this.StatusMsg = res[2];
+            if (res.Length >= 3)
+            {
+                this.Version = res[0];
+                this.StatusCode = res[1];
+                this.StatusMsg = res[2];
+            }
 
             this.Headers = new List<KeyValuePair<string, string>>();
 
@@ -50,22 +54,21 @@ namespace Cyaim.RTSPClient
                     case int _ when spaceNum < 2:
                         {
                             int keyIndex = item.IndexOf(':');
-                            string k = item.Substring(0, keyIndex);
-                            string v = item.Substring(keyIndex + 1, item.Length - keyIndex - 1).TrimStart();
-
-                            if (k.ToLower() == "cseq")
+                            if (keyIndex > 0)
                             {
-                                CSeq = Convert.ToInt32(v);
-                                spaceNum = 0;
-                                break;
+                                string k = item.Substring(0, keyIndex);
+                                string v = item.Substring(keyIndex + 1, item.Length - keyIndex - 1).TrimStart();
+
+                                if (k.ToLower() == "cseq")
+                                {
+                                    CSeq = Convert.ToInt32(v);
+                                    spaceNum = 0;
+                                    break;
+                                }
+
+                                Headers.Add(new KeyValuePair<string, string>(k, v));
                             }
-
-                            Headers.Add(new KeyValuePair<string, string>(k, v));
-
-                            //if (!isSpaces)
-                            //{
                             spaceNum = 0;
-                            //}
                         }
                         break;
                     //content
@@ -78,8 +81,6 @@ namespace Cyaim.RTSPClient
                     default:
                         break;
                 }
-
-
             }
 
             this.Response = this.ResponseBuilder.ToString();
@@ -88,40 +89,39 @@ namespace Cyaim.RTSPClient
         /// <summary>
         /// Raw data
         /// </summary>
-        public byte[] Raw { get; set; }
+        public byte[]? Raw { get; set; }
 
         /// <summary>
         /// RTSP version
         /// </summary>
-        public string Version { get; set; }
+        public string Version { get; set; } = string.Empty;
 
         /// <summary>
-        /// code
+        /// Status code
         /// </summary>
-        public string StatusCode { get; set; }
+        public string StatusCode { get; set; } = string.Empty;
 
         /// <summary>
-        /// OK
+        /// Status message
         /// </summary>
-        public string StatusMsg { get; set; }
+        public string StatusMsg { get; set; } = string.Empty;
 
         /// <summary>
-        /// seq
+        /// CSeq number
         /// </summary>
         public int CSeq { get; set; }
 
         /// <summary>
         /// Response headers
         /// </summary>
-        public List<KeyValuePair<string, string>> Headers { get; set; }
+        public List<KeyValuePair<string, string>> Headers { get; set; } = new List<KeyValuePair<string, string>>();
 
         /// <summary>
-        /// Response content
+        /// Response content body
         /// </summary>
-        public string Response { get; set; }
+        public string Response { get; set; } = string.Empty;
+
         private StringBuilder ResponseBuilder { get; set; } = new StringBuilder();
-
-
     }
 
 }

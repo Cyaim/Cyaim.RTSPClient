@@ -50,7 +50,7 @@ namespace System
             }
 
             var encoding = Encoding.UTF8;
-            SHA1 sha1 = new SHA1CryptoServiceProvider();
+            SHA1 sha1 = SHA1.Create();
             return HashAlgorithmBase(sha1, value, encoding);
         }
 
@@ -65,7 +65,7 @@ namespace System
             }
 
             var encoding = Encoding.UTF8;
-            SHA256 sha256 = new SHA256Managed();
+            SHA256 sha256 = SHA256.Create();
             return HashAlgorithmBase(sha256, value, encoding);
         }
 
@@ -79,7 +79,7 @@ namespace System
                 throw new ArgumentNullException("未将对象引用设置到对象的实例。");
             }
             var encoding = Encoding.UTF8;
-            SHA512 sha512 = new SHA512Managed();
+            SHA512 sha512 = SHA512.Create();
             return HashAlgorithmBase(sha512, value, encoding);
         }
 
@@ -158,7 +158,7 @@ namespace System
             }
             var encoding = Encoding.UTF8;
             byte[] keyStr = encoding.GetBytes(keyVal);
-            HMACMD5 hmacMd5 = new HMACMD5(keyStr);
+            var hmacMd5 = new HMACMD5(keyStr);
             return HashAlgorithmBase(hmacMd5, value, encoding);
         }
 
@@ -185,7 +185,7 @@ namespace System
             byte[] btIv = ivVal.FormatByte(encoding);
             byte[] byteArray = encoding.GetBytes(value);
             string encrypt;
-            Rijndael aes = Rijndael.Create();
+            Aes aes = Aes.Create();
             using (MemoryStream mStream = new MemoryStream())
             {
                 using (CryptoStream cStream = new CryptoStream(mStream, aes.CreateEncryptor(btKey, btIv), CryptoStreamMode.Write))
@@ -213,7 +213,7 @@ namespace System
             byte[] btIv = ivVal.FormatByte(encoding);
             byte[] byteArray = Convert.FromBase64String(value);
             string decrypt;
-            Rijndael aes = Rijndael.Create();
+            Aes aes = Aes.Create();
             using (MemoryStream mStream = new MemoryStream())
             {
                 using (CryptoStream cStream = new CryptoStream(mStream, aes.CreateDecryptor(btKey, btIv), CryptoStreamMode.Write))
@@ -241,7 +241,7 @@ namespace System
             byte[] bVector = new byte[16];
             Array.Copy(Encoding.UTF8.GetBytes(ivVal.PadRight(bVector.Length)), bVector, bVector.Length);
             byte[] cryptograph;
-            Rijndael aes = Rijndael.Create();
+            Aes aes = Aes.Create();
             try
             {
                 using (MemoryStream mStream = new MemoryStream())
@@ -256,7 +256,7 @@ namespace System
             }
             catch
             {
-                cryptograph = null;
+                cryptograph = Array.Empty<byte>();
             }
             return cryptograph;
         }
@@ -275,7 +275,7 @@ namespace System
             byte[] bVector = new byte[16];
             Array.Copy(Encoding.UTF8.GetBytes(ivVal.PadRight(bVector.Length)), bVector, bVector.Length);
             byte[] original;
-            Rijndael aes = Rijndael.Create();
+            Aes aes = Aes.Create();
             try
             {
                 using (MemoryStream mStream = new MemoryStream(data))
@@ -298,7 +298,7 @@ namespace System
             }
             catch
             {
-                original = null;
+                original = Array.Empty<byte>();
             }
             return original;
         }
@@ -315,7 +315,9 @@ namespace System
             try
             {
                 byte[] data = Encoding.UTF8.GetBytes(value);
-                var des = new DESCryptoServiceProvider { Key = Encoding.ASCII.GetBytes(keyVal.Length > 8 ? keyVal.Substring(0, 8) : keyVal), IV = Encoding.ASCII.GetBytes(ivVal.Length > 8 ? ivVal.Substring(0, 8) : ivVal) };
+                var des = DES.Create();
+                des.Key = Encoding.ASCII.GetBytes(keyVal.Length > 8 ? keyVal.Substring(0, 8) : keyVal);
+                des.IV = Encoding.ASCII.GetBytes(ivVal.Length > 8 ? ivVal.Substring(0, 8) : ivVal);
                 var desencrypt = des.CreateEncryptor();
                 byte[] result = desencrypt.TransformFinalBlock(data, 0, data.Length);
                 return BitConverter.ToString(result);
@@ -336,7 +338,9 @@ namespace System
                 {
                     data[i] = byte.Parse(sInput[i], NumberStyles.HexNumber);
                 }
-                var des = new DESCryptoServiceProvider { Key = Encoding.ASCII.GetBytes(keyVal.Length > 8 ? keyVal.Substring(0, 8) : keyVal), IV = Encoding.ASCII.GetBytes(ivVal.Length > 8 ? ivVal.Substring(0, 8) : ivVal) };
+                var des = DES.Create();
+                des.Key = Encoding.ASCII.GetBytes(keyVal.Length > 8 ? keyVal.Substring(0, 8) : keyVal);
+                des.IV = Encoding.ASCII.GetBytes(ivVal.Length > 8 ? ivVal.Substring(0, 8) : ivVal);
                 var desencrypt = des.CreateDecryptor();
                 byte[] result = desencrypt.TransformFinalBlock(data, 0, data.Length);
                 return Encoding.UTF8.GetString(result);
@@ -396,17 +400,17 @@ namespace System
 
         public static string Base64Encrypt(Stream stream)
         {
-            byte[] data = new byte[stream.Length];
-            stream.Read(data, 0, data.Length);
-            return Convert.ToBase64String(data);
+            using var memoryStream = new MemoryStream();
+            stream.CopyTo(memoryStream);
+            return Convert.ToBase64String(memoryStream.ToArray());
         }
 
 
         public static async Task<string> Base64EncryptAsync(Stream stream)
         {
-            byte[] data = new byte[stream.Length];
-            await stream.ReadAsync(data, 0, data.Length);
-            return Convert.ToBase64String(data);
+            using var memoryStream = new MemoryStream();
+            await stream.CopyToAsync(memoryStream);
+            return Convert.ToBase64String(memoryStream.ToArray());
         }
         #endregion
 
@@ -451,12 +455,12 @@ namespace System
         #endregion
 
         #region 对象深拷贝
-        public static T CloneModel<T>(T model)
+        public static T? CloneModel<T>(T model)
         {
             var res = default(T);
             var type = typeof(T);
 
-            res = (T)Activator.CreateInstance(type);//创建新实例
+            res = (T?)Activator.CreateInstance(type);//创建新实例
             var properties = type.GetProperties();//获取所有属性
             foreach (var property in properties)
             {

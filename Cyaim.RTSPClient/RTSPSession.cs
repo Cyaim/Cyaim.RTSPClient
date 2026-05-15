@@ -14,9 +14,9 @@ namespace Cyaim.RTSPClient
 
     public class RTSPSession : IDisposable
     {
-        public TcpClient client;
+        public TcpClient? client;
 
-        private NetworkStream tcpStream { get; set; }
+        private NetworkStream? tcpStream { get; set; }
 
         /// <summary>
         /// 请求结果响应
@@ -24,9 +24,9 @@ namespace Cyaim.RTSPClient
         /// </summary>
         private ConcurrentDictionary<int, RTSPResponse> requestResults { get; set; } = new ConcurrentDictionary<int, RTSPResponse>();
 
-        public Uri Uri { get; private set; }
+        public Uri? Uri { get; private set; }
 
-        public Exception Exception { get; private set; }
+        public Exception? Exception { get; private set; }
 
 
         public int NewCSeq
@@ -38,25 +38,25 @@ namespace Cyaim.RTSPClient
         }
         private int cseq;
 
-        public Task AcceptHandler { get; set; }
+        public Task? AcceptHandler { get; set; }
 
-        public string UserName { get; set; }
+        public string? UserName { get; set; }
 
-        public string Password { get; set; }
+        public string? Password { get; set; }
 
-        public string Realm { get; set; }
+        public string? Realm { get; set; }
 
-        public string Nonce { get; set; }
-
-
-        public string Authorization { get; set; }
-
-        public SDP SDP { get; set; }
+        public string? Nonce { get; set; }
 
 
-        public string Session { get; set; }
+        public string? Authorization { get; set; }
 
-        public string Public { get; private set; }
+        public SDP? SDP { get; set; }
+
+
+        public string? Session { get; set; }
+
+        public string? Public { get; private set; }
 
         public string OnvifBackChannel { get; set; } = "www.onvif.org/ver20/backchannel";
         public bool HasBackChannelSupported { get; set; }
@@ -102,9 +102,13 @@ namespace Cyaim.RTSPClient
         /// <returns></returns>
         public async Task ReConnect()
         {
-            client.Close();
+            client?.Close();
+            client = new TcpClient();
 
-            await client.ConnectAsync(Uri.Host, Uri.Port);
+            if (Uri != null)
+            {
+                await client.ConnectAsync(Uri.Host, Uri.Port);
+            }
         }
 
         /// <summary>
@@ -113,6 +117,7 @@ namespace Cyaim.RTSPClient
         /// <returns></returns>
         private async Task Accept()
         {
+            if (client == null) return;
 
             tcpStream = client.GetStream();
 
@@ -163,8 +168,10 @@ namespace Cyaim.RTSPClient
         /// <returns></returns>
         public async Task SendAsync(byte[] bin)
         {
-            await tcpStream.WriteAsync(bin, 0, bin.Length);
-            //tcpStream.Flush();
+            if (tcpStream != null)
+            {
+                await tcpStream.WriteAsync(bin, 0, bin.Length);
+            }
         }
 
         /// <summary>
@@ -173,7 +180,7 @@ namespace Cyaim.RTSPClient
         /// <param name="bin"></param>
         public void Send(byte[] bin)
         {
-            tcpStream.Write(bin, 0, bin.Length);
+            tcpStream?.Write(bin, 0, bin.Length);
         }
 
         /// <summary>
@@ -257,9 +264,9 @@ namespace Cyaim.RTSPClient
                             throw new TimeoutException($"Get data timeout,use time {stopwatch.ElapsedMilliseconds} ms.");
                         }
 
-                        hasResult = requestResults.TryGetValue(cseq, out RTSPResponse response);
+                        hasResult = requestResults.TryGetValue(cseq, out RTSPResponse? response);
 
-                        if (hasResult)
+                        if (hasResult && response != null)
                         {
                             return response;
                         }
@@ -401,8 +408,10 @@ namespace Cyaim.RTSPClient
         public void UpdateAuthorization(string uri, string method)
         {
             //需要授权
-            //"rtsp://192.168.1.127:554/1/1"
-            this.Authorization = AuthorizationDigest(UserName, Password, uri, Realm, Nonce, method);
+            if (UserName != null && Password != null && Realm != null && Nonce != null)
+            {
+                this.Authorization = AuthorizationDigest(UserName, Password, uri, Realm, Nonce, method);
+            }
         }
 
         /// <summary>
@@ -430,6 +439,7 @@ namespace Cyaim.RTSPClient
         /// <returns></returns>
         public async Task<RTSPResponse> Setup(string channelUri, string transport, bool useBackchannel)
         {
+            if (Uri == null) throw new InvalidOperationException("Not connected");
 
             RTSPRequest request = new RTSPRequest()
             {
@@ -439,7 +449,6 @@ namespace Cyaim.RTSPClient
                 CSeq = NewCSeq,
                 Transport = transport,
                 Authorization = Authorization,
-                //Require = "www.onvif.org/ver20/backchannel"
             };
             if (useBackchannel)
             {
@@ -465,23 +474,22 @@ namespace Cyaim.RTSPClient
         /// <returns></returns>
         public async Task<RTSPResponse> Play(string channelUri, string range, bool useBackchannel)
         {
+            if (Uri == null) throw new InvalidOperationException("Not connected");
+
             RTSPRequest request = new RTSPRequest()
             {
                 Method = "PLAY",
                 URI = Uri.AbsoluteUri + channelUri,
                 Version = "RTSP/1.0",
-
                 CSeq = NewCSeq,
                 Session = this.Session,
                 Authorization = Authorization,
                 Range = range,
-                //Require = "www.onvif.org/ver20/backchannel"
             };
             if (useBackchannel)
             {
                 request.Require = OnvifBackChannel;
             }
-
 
             UpdateAuthorization(Uri.AbsoluteUri, request.Method);
             request.Authorization = this.Authorization;
@@ -501,16 +509,16 @@ namespace Cyaim.RTSPClient
         /// <returns></returns>
         public async Task<RTSPResponse> Teardown(string channelUri, bool useBackchannel)
         {
+            if (Uri == null) throw new InvalidOperationException("Not connected");
+
             RTSPRequest request = new RTSPRequest()
             {
                 Method = "TEARDOWN",
                 URI = Uri.AbsoluteUri + channelUri,
                 Version = "RTSP/1.0",
-
                 CSeq = NewCSeq,
                 Session = this.Session,
                 Authorization = Authorization,
-                //Require = "www.onvif.org/ver20/backchannel"
             };
             if (useBackchannel)
             {
@@ -533,7 +541,7 @@ namespace Cyaim.RTSPClient
         /// <param name="channel"></param>
         /// <param name="progress">callback;v1:send progress,v2:packet time</param>
         /// <returns></returns>
-        public async Task PlayAudio_G711A(byte[] audio, int fps, int sampleRate, long ssrc, byte channel = 0x00, Action<decimal, long> progress = null)
+        public async Task PlayAudio_G711A(byte[] audio, int fps, int sampleRate, long ssrc, byte channel = 0x00, Action<decimal, long>? progress = null)
         {
             await PlayAudio_G711(audio, fps, sampleRate, RTPPayloadType.PCMA, ssrc, channel, progress);
         }
@@ -549,7 +557,7 @@ namespace Cyaim.RTSPClient
         /// <param name="channel"></param>
         /// <param name="progress">callback;v1:send progress,v2:packet time</param>
         /// <returns></returns>
-        public async Task PlayAudio_G711(byte[] audio, int fps, int sampleRate, RTPPayloadType g711Type, long ssrc, byte channel = 0x00, Action<decimal, long> progress = null)
+        public async Task PlayAudio_G711(byte[] audio, int fps, int sampleRate, RTPPayloadType g711Type, long ssrc, byte channel = 0x00, Action<decimal, long>? progress = null)
         {
             //int packSecLen = 320;
 
@@ -683,15 +691,16 @@ namespace Cyaim.RTSPClient
 
                     try
                     {
-                        Teardown(Uri.AbsoluteUri, true).Wait();
+                        if (Uri != null)
+                        {
+                            Teardown(Uri.AbsoluteUri, true).Wait();
+                        }
                     }
                     finally
                     {
-                        tcpStream.Flush();
-                        tcpStream.Close();
-                        client.Close();
-
-
+                        tcpStream?.Flush();
+                        tcpStream?.Close();
+                        client?.Close();
                     }
 
                 }
@@ -700,7 +709,7 @@ namespace Cyaim.RTSPClient
                 // TODO: 将大型字段设置为 null
                 disposedValue = true;
 
-                requestResults = null;
+                requestResults = null!;
                 Uri = null;
                 Exception = null;
             }

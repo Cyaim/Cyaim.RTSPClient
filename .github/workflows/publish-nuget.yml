@@ -1,0 +1,72 @@
+name: 打包发布到NuGet
+
+on:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  publish:
+    # 仅当提交信息包含"打包发布"时运行
+    if: contains(github.event.head_commit.message, '打包发布')
+    
+    runs-on: ubuntu-latest
+    
+    steps:
+    # 检出代码
+    - name: 检出代码
+      uses: actions/checkout@v4
+    
+    # 设置 .NET SDK
+    - name: 设置 .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+    
+    # 生成版本号: 2.YY.MMdd.hhmm
+    - name: 生成版本号
+      id: version
+      run: |
+        VERSION="2.$(date -u +'%y.%m%d.%H%M')"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "生成版本号: $VERSION"
+    
+    # 还原依赖
+    - name: 还原依赖
+      run: dotnet restore Cyaim.RTSPClient/Cyaim.RTSPClient.csproj
+    
+    # 编译项目
+    - name: 编译项目
+      run: dotnet build Cyaim.RTSPClient/Cyaim.RTSPClient.csproj --configuration Release --no-restore -p:Version=${{ steps.version.outputs.version }}
+    
+    # 打包
+    - name: 打包NuGet
+      run: dotnet pack Cyaim.RTSPClient/Cyaim.RTSPClient.csproj --configuration Release --no-build -p:PackageVersion=${{ steps.version.outputs.version }} --output ./nupkgs
+    
+    # 推送到NuGet.org
+    - name: 推送到NuGet
+      run: dotnet nuget push ./nupkgs/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+    
+    # 创建Git Tag
+    - name: 创建Tag
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -a "v${{ steps.version.outputs.version }}" -m "Release v${{ steps.version.outputs.version }}"
+        git push origin "v${{ steps.version.outputs.version }}"
+    
+    # 创建GitHub Release
+    - name: 创建GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v${{ steps.version.outputs.version }}
+        name: Release v${{ steps.version.outputs.version }}
+        body: |
+          ## 版本 ${{ steps.version.outputs.version }}
+          
+          自动发布于 ${{ github.event.head_commit.message }}
+          
+          ### NuGet包
+          ```
+          dotnet add package Cyaim.RTSPClient --version ${{ steps.version.outputs.version }}
+          ```
+        files: ./nupkgs/*.nupkg

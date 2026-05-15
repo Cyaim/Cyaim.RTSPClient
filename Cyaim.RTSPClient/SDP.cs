@@ -75,9 +75,8 @@ namespace Cyaim.RTSPClient
                     case "i":
                         if (inMedia)
                         {
-                            var mediaObj = MediaDescribes.LastOrDefault();
+                            var mediaObj = MediaDescribes[MediaDescribes.Count - 1];
                             mediaObj.i = v;
-                            MediaDescribes[MediaDescribes.Count - 1] = mediaObj;
                         }
                         else
                         {
@@ -96,9 +95,8 @@ namespace Cyaim.RTSPClient
                     case "c":
                         if (inMedia)
                         {
-                            var mediaObj = MediaDescribes.LastOrDefault();
+                            var mediaObj = MediaDescribes[MediaDescribes.Count - 1];
                             mediaObj.c = v;
-                            MediaDescribes[MediaDescribes.Count - 1] = mediaObj;
                         }
                         else
                         {
@@ -108,9 +106,8 @@ namespace Cyaim.RTSPClient
                     case "b":
                         if (inMedia)
                         {
-                            var mediaObj = MediaDescribes.LastOrDefault();
+                            var mediaObj = MediaDescribes[MediaDescribes.Count - 1];
                             mediaObj.b = v;
-                            MediaDescribes[MediaDescribes.Count - 1] = mediaObj;
                         }
                         else
                         {
@@ -122,21 +119,19 @@ namespace Cyaim.RTSPClient
                     case "k":
                         if (inMedia)
                         {
-                            var mediaObj = MediaDescribes.LastOrDefault();
+                            var mediaObj = MediaDescribes[MediaDescribes.Count - 1];
                             mediaObj.k = v;
-                            MediaDescribes[MediaDescribes.Count - 1] = mediaObj;
                         }
                         else
                         {
-                            k = v;
+                            this.k = v;
                         }
                         break;
                     case "a":
                         if (inMedia)
                         {
-                            var mediaObj = MediaDescribes.LastOrDefault();
+                            var mediaObj = MediaDescribes[MediaDescribes.Count - 1];
                             mediaObj.a.Add(v);
-                            MediaDescribes[MediaDescribes.Count - 1] = mediaObj;
                         }
                         else
                         {
@@ -164,104 +159,104 @@ namespace Cyaim.RTSPClient
         /// <summary>
         /// Protocol version
         /// </summary>
-        public string v { get; set; }
+        public string? v { get; set; }
 
         /// <summary>
         /// Owner
         /// </summary>
-        public string o { get; set; }
+        public string? o { get; set; }
 
         /// <summary>
         /// Session name
         /// </summary>
-        public string s { get; set; }
+        public string? s { get; set; }
 
         /// <summary>
         /// Session information
         /// </summary>
-        public string i { get; set; }
+        public string? i { get; set; }
 
         /// <summary>
         /// URI of description
         /// </summary>
-        public string u { get; set; }
+        public string? u { get; set; }
 
         /// <summary>
         /// Email address
         /// </summary>
-        public string e { get; set; }
+        public string? e { get; set; }
 
         /// <summary>
         /// Phone number
         /// </summary>
-        public string p { get; set; }
+        public string? p { get; set; }
 
         /// <summary>
         /// connection information
         /// </summary>
-        public string c { get; set; }
+        public string? c { get; set; }
 
         /// <summary>
         /// bandwidth information
         /// </summary>
-        public string b { get; set; }
+        public string? b { get; set; }
 
         /// <summary>
         /// Time zone adjustments
         /// </summary>
-        public string z { get; set; }
+        public string? z { get; set; }
 
         /// <summary>
         /// Encryption key
         /// </summary>
-        public string k { get; set; }
+        public string? k { get; set; }
 
         /// <summary>
-        /// Zero or more session attributelines
+        /// Zero or more session attribute lines
         /// </summary>
-        public List<string> a { get; set; }
+        public List<string> a { get; set; } = new List<string>();
 
         /// <summary>
         /// Time the session is active
         /// </summary>
-        public string t { get; set; }
+        public string? t { get; set; }
 
         /// <summary>
         /// Zero or more repeat times
         /// </summary>
-        public List<string> r { get; set; }
+        public List<string> r { get; set; } = new List<string>();
 
         /// <summary>
         /// Media describe
         /// </summary>
-        public List<MediaDescribe> MediaDescribes { get; set; }
+        public List<MediaDescribe> MediaDescribes { get; set; } = new List<MediaDescribe>();
 
         public class MediaDescribe
         {
             /// <summary>
             /// Media name and transport address
             /// </summary>
-            public string m { get; set; }
+            public string? m { get; set; }
 
             /// <summary>
             /// Media title
             /// </summary>
-            public string i { get; set; }
+            public string? i { get; set; }
 
             /// <summary>
             /// Conection information
             /// </summary>
-            public string c { get; set; }
+            public string? c { get; set; }
 
             /// <summary>
             /// Bandwidth information
             /// </summary>
-            public string b { get; set; }
+            public string? b { get; set; }
 
             /// <summary>
             /// Encryption key
             /// </summary>
-            public string k { get; set; }
+            public string? k { get; set; }
 
             /// <summary>
             /// Zero or more media attributelines

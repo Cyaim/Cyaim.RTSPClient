@@ -34,16 +34,16 @@ namespace Cyaim.RTSPClient
             req.Append(RTSPConst.CRLF);
 
             request.HeaderMaps["CSeq"] = request.CSeq + string.Empty;
-            request.HeaderMaps["User-Agent"] = request.UserAgent;
-            request.HeaderMaps["Authorization"] = request.Authorization;
-            request.HeaderMaps["Accept"] = request.Accept;
-            request.HeaderMaps["Require"] = request.Require;
-            request.HeaderMaps["Session"] = request.Session;
-            request.HeaderMaps["Transport"] = request.Transport;
-            request.HeaderMaps["Range"] = request.Range;
-            request.HeaderMaps["Content-Base"] = request.ContentBase;
-            request.HeaderMaps["Content-Length"] = request.ContentLength;
-            request.HeaderMaps["Content-Type"] = request.ContentType;
+            request.HeaderMaps["User-Agent"] = request.UserAgent ?? string.Empty;
+            request.HeaderMaps["Authorization"] = request.Authorization ?? string.Empty;
+            request.HeaderMaps["Accept"] = request.Accept ?? string.Empty;
+            request.HeaderMaps["Require"] = request.Require ?? string.Empty;
+            request.HeaderMaps["Session"] = request.Session ?? string.Empty;
+            request.HeaderMaps["Transport"] = request.Transport ?? string.Empty;
+            request.HeaderMaps["Range"] = request.Range ?? string.Empty;
+            request.HeaderMaps["Content-Base"] = request.ContentBase ?? string.Empty;
+            request.HeaderMaps["Content-Length"] = request.ContentLength ?? string.Empty;
+            request.HeaderMaps["Content-Type"] = request.ContentType ?? string.Empty;
 
             var hmKeys = request.HeaderMaps.Keys;
             foreach (var item in hmKeys)
@@ -73,11 +73,14 @@ namespace Cyaim.RTSPClient
             return req.ToString();
         }
 
-        private static string GetRequestHeaderValue(List<string> headers, string headerKey, string value)
+        private static string GetRequestHeaderValue(List<string>? headers, string headerKey, string value)
         {
             if (string.IsNullOrEmpty(value))
             {
-                string keyValue = headers.Where(x => x != null).Where(x => x.ToLower().Contains(headerKey.ToLower())).LastOrDefault();
+                string? keyValue = headers?
+                    .Where(x => x != null)
+                    .Where(x => x.ToLower().Contains(headerKey.ToLower()))
+                    .LastOrDefault();
 
                 return keyValue ?? string.Empty;
             }
@@ -88,48 +91,84 @@ namespace Cyaim.RTSPClient
         }
 
         /// <summary>
-        /// Reuest method
+        /// Request method
         /// </summary>
-        public string Method { get; set; }
-
-
-        public string URI { get; set; }
-
-        public string Version { get; set; }
-
+        public string Method { get; set; } = string.Empty;
 
         /// <summary>
-        /// TCP seq
+        /// Request URI
+        /// </summary>
+        public string URI { get; set; } = string.Empty;
+
+        /// <summary>
+        /// RTSP version
+        /// </summary>
+        public string Version { get; set; } = "RTSP/1.0";
+
+        /// <summary>
+        /// CSeq number
         /// </summary>
         public int CSeq { get; set; }
 
-        public string UserAgent { get; set; } = "Cyaim RTSP Client 1.0";
-
-        public string Authorization { get; set; }
-
-        public string Accept { get; set; }
-
-        public string Require { get; set; }
-
-        public string Session { get; set; }
-
-        public string Transport { get; set; }
-
-        public string Range { get; set; }
-
-        public string ContentBase { get; set; }
-        public string ContentLength { get; set; }
-        public string ContentType { get; set; }
+        /// <summary>
+        /// User-Agent header
+        /// </summary>
+        public string UserAgent { get; set; } = "Cyaim RTSP Client 2.0";
 
         /// <summary>
-        /// Add other request parameters
+        /// Authorization header
         /// </summary>
-        public List<string> Headers { get; set; }
+        public string? Authorization { get; set; }
 
         /// <summary>
-        /// Add other request content
+        /// Accept header
         /// </summary>
-        public List<string> Content { get; set; }
+        public string? Accept { get; set; }
+
+        /// <summary>
+        /// Require header
+        /// </summary>
+        public string? Require { get; set; }
+
+        /// <summary>
+        /// Session header
+        /// </summary>
+        public string? Session { get; set; }
+
+        /// <summary>
+        /// Transport header
+        /// </summary>
+        public string? Transport { get; set; }
+
+        /// <summary>
+        /// Range header
+        /// </summary>
+        public string? Range { get; set; }
+
+        /// <summary>
+        /// Content-Base header
+        /// </summary>
+        public string? ContentBase { get; set; }
+
+        /// <summary>
+        /// Content-Length header
+        /// </summary>
+        public string? ContentLength { get; set; }
+
+        /// <summary>
+        /// Content-Type header
+        /// </summary>
+        public string? ContentType { get; set; }
+
+        /// <summary>
+        /// Additional request headers
+        /// </summary>
+        public List<string>? Headers { get; set; }
+
+        /// <summary>
+        /// Request content body
+        /// </summary>
+        public List<string>? Content { get; set; }
     }
 
 }
