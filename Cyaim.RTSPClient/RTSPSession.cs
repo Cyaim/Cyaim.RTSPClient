@@ -1,4 +1,5 @@
 ﻿using Cyaim.RTSPClient.Common;
+using Cyaim.RTSPClient.Events;
 using Cyaim.RTSPClient.Media;
 using System;
 using System.Collections.Concurrent;
@@ -12,725 +13,939 @@ using System.Threading.Tasks;
 
 namespace Cyaim.RTSPClient
 {
-
+    /// <summary>
+    /// RTSP 会话管理类
+    /// 支持完整的 RTSP 协议操作
+    /// </summary>
     public class RTSPSession : IDisposable
     {
-        public TcpClient? client;
+        #region 字段
 
-        private NetworkStream? tcpStream { get; set; }
+        private TcpClient? _client;
+        private NetworkStream? _tcpStream;
+        private readonly ConcurrentDictionary<int, TaskCompletionSource<RTSPResponse>> _pendingRequests = new();
+        private readonly ConcurrentDictionary<int, RTSPResponse> _requestResults = new();
+        private int _cseq;
+        private bool _disposed;
+        private CancellationTokenSource? _receiveCts;
+        private Task? _receiveTask;
+
+        #endregion
+
+        #region 属性
 
         /// <summary>
-        /// 请求结果响应
-        /// K：CSeq,V:result
+        /// RTSP URI
         /// </summary>
-        private ConcurrentDictionary<int, RTSPResponse> requestResults { get; set; } = new ConcurrentDictionary<int, RTSPResponse>();
-
         public Uri? Uri { get; private set; }
 
-        public Exception? Exception { get; private set; }
-
-
-        public int NewCSeq
-        {
-            get
-            {
-                return ++cseq;
-            }
-        }
-        private int cseq;
-
-        public Task? AcceptHandler { get; set; }
-
-        public string? UserName { get; set; }
-
-        public string? Password { get; set; }
-
-        public string? Realm { get; set; }
-
-        public string? Nonce { get; set; }
-
-
-        public string? Authorization { get; set; }
-
-        public SDPSession? SDP { get; set; }
-
-
-        public string? Session { get; set; }
-
-        public string? Public { get; private set; }
-
-        public string OnvifBackChannel { get; set; } = "www.onvif.org/ver20/backchannel";
-        public bool HasBackChannelSupported { get; set; }
-
+        /// <summary>
+        /// 最后一次异常
+        /// </summary>
+        public Exception? LastException { get; private set; }
 
         /// <summary>
-        /// Next tcp connection timeout
+        /// 连接状态
+        /// </summary>
+        public RTSPConnectionState State { get; private set; } = RTSPConnectionState.Disconnected;
+
+        /// <summary>
+        /// SDP 会话描述
+        /// </summary>
+        public SDPSession? SDP { get; private set; }
+
+        /// <summary>
+        /// RTSP 会话 ID
+        /// </summary>
+        public string? SessionId { get; private set; }
+
+        /// <summary>
+        /// 服务器支持的方法
+        /// </summary>
+        public string? Public { get; private set; }
+
+        /// <summary>
+        /// 服务器超时时间（秒）
         /// </summary>
         public int Timeout { get; private set; }
 
         /// <summary>
-        /// Wait response result timeout millisecond.
+        /// 等待响应超时（毫秒）
         /// </summary>
-        public int WaitResponseTimeout { get; set; }
+        public int WaitResponseTimeout { get; set; } = 10000;
 
         /// <summary>
-        /// Connect server
+        /// 认证用户名
         /// </summary>
-        /// <param name="url">rtsp://192.168.1.127:554</param>
-        /// <returns></returns>
-        public static RTSPSession Connect(string url)
-        {
-            try
-            {
-                Uri uri = new Uri(url);
-
-                RTSPSession session = new RTSPSession() { Uri = uri };
-                session.client = new TcpClient(uri.Host, uri.Port);
-
-                session.AcceptHandler = session.Accept();
-
-                return session;
-            }
-            catch (Exception)
-            {
-                throw;
-            }
-        }
+        public string? UserName { get; set; }
 
         /// <summary>
-        /// Reconnect tcp
+        /// 认证密码
         /// </summary>
-        /// <returns></returns>
-        public async Task ReConnect()
-        {
-            client?.Close();
-            client = new TcpClient();
-
-            if (Uri != null)
-            {
-                await client.ConnectAsync(Uri.Host, Uri.Port);
-            }
-        }
+        public string? Password { get; set; }
 
         /// <summary>
-        /// Processing response
+        /// Digest 认证 Realm
         /// </summary>
-        /// <returns></returns>
-        private async Task Accept()
-        {
-            if (client == null) return;
-
-            tcpStream = client.GetStream();
-
-            //StreamReader sr = new StreamReader(ns);//流读写器
-
-            while (true)
-            {
-                try
-                {
-                    byte[] raw = new byte[1024];
-
-                    int streamCount = await tcpStream.ReadAsync(raw, 0, raw.Length);
-
-                    if (streamCount == 0)
-                    {
-                        Thread.Sleep(1);
-                        continue;
-                    }
-
-                    string msg = Encoding.Default.GetString(raw, 0, streamCount);
-
-                    RTSPResponse response = new RTSPResponse(msg, raw);
-
-                    requestResults.TryRemove(response.CSeq, out _);
-                    requestResults.TryAdd(response.CSeq, response);
-
-                    //tcpStream.Flush();
-
-                    //ns.Close();
-                }
-                catch (Exception ex)
-                {
-                    this.Exception = ex;
-
-                    // server disconnect
-                    break;
-                }
-            }
-
-        }
-
-        #region Send
+        public string? Realm { get; private set; }
 
         /// <summary>
-        /// async send data
+        /// Digest 认证 Nonce
         /// </summary>
-        /// <param name="bin"></param>
-        /// <returns></returns>
-        public async Task SendAsync(byte[] bin)
-        {
-            if (tcpStream != null)
-            {
-                await tcpStream.WriteAsync(bin, 0, bin.Length);
-            }
-        }
+        public string? Nonce { get; private set; }
 
         /// <summary>
-        /// send data
+        /// Authorization 头
         /// </summary>
-        /// <param name="bin"></param>
-        public void Send(byte[] bin)
-        {
-            tcpStream?.Write(bin, 0, bin.Length);
-        }
+        public string? Authorization { get; private set; }
 
         /// <summary>
-        /// send string data.
+        /// ONVIF 回传通道标识
         /// </summary>
-        /// <param name="data"></param>
-        /// <param name="encoding"></param>
-        /// <returns></returns>
-        public async Task Send(string data, Encoding encoding)
-        {
-            byte[] bin = encoding.GetBytes(data);
-            await SendAsync(bin);
-        }
+        public string OnvifBackChannel { get; set; } = "www.onvif.org/ver20/backchannel";
 
         /// <summary>
-        /// send RTSP control signalling
+        /// 是否支持回传通道
         /// </summary>
-        /// <param name="request"></param>
-        /// <returns></returns>
-        public async Task<RTSPResponse> SendAsync(RTSPRequest request)
-        {
-            string req = RTSPRequest.GetRequest(request);
+        public bool HasBackChannelSupported { get; private set; }
 
-            await Send(req, Encoding.Default);
+        /// <summary>
+        /// 是否已连接
+        /// </summary>
+        public bool IsConnected => State >= RTSPConnectionState.Connected;
 
-            RTSPResponse res = await GetResponse(request.CSeq);
-            return res;
-        }
         #endregion
 
+        #region 事件
+
         /// <summary>
-        /// Update server disconnect time.
+        /// 连接状态变更事件
         /// </summary>
-        /// <param name="res"></param>
-        private void UpdateTimeout(RTSPResponse res)
+        public event EventHandler<RTSPConnectionStateChangedEventArgs>? StateChanged;
+
+        /// <summary>
+        /// RTP 数据接收事件
+        /// </summary>
+        public event EventHandler<RtpDataReceivedEventArgs>? DataReceived;
+
+        /// <summary>
+        /// 错误事件
+        /// </summary>
+        public event EventHandler<RTSPErrorEventArgs>? Error;
+
+        /// <summary>
+        /// Keep-Alive 结果事件
+        /// </summary>
+        public event EventHandler<KeepAliveEventArgs>? KeepAlive;
+
+        #endregion
+
+        #region 构造函数
+
+        public RTSPSession() { }
+
+        public RTSPSession(Uri uri)
         {
-            try
-            {
-                string sessionVal = res.Headers.Where(x => x.Key == "Session").FirstOrDefault().Value;
-                if (!string.IsNullOrEmpty(sessionVal))
-                {
-                    string[] sessionParms = sessionVal.Split(';');
-                    if (sessionParms.Length > 1)
-                    {
-                        this.Session = sessionParms[0];
-                    }
+            Uri = uri ?? throw new ArgumentNullException(nameof(uri));
+        }
 
-                    string timeout = sessionParms.Where(x => x.IndexOf("timeout=") > -1).FirstOrDefault() ?? string.Empty;
-                    timeout = timeout.Replace("timeout=", "");
-                    bool canTime = Int32.TryParse(timeout, out int time);
-                    if (canTime)
-                    {
-                        Timeout = time;
-                    }
-                }
-            }
-            catch
-            {
+        public RTSPSession(string url) : this(new Uri(url)) { }
 
-            }
+        #endregion
+
+        #region 连接管理
+
+        /// <summary>
+        /// 连接到 RTSP 服务器
+        /// </summary>
+        public static RTSPSession Connect(string url)
+        {
+            var session = new RTSPSession(url);
+            session.ConnectInternal();
+            return session;
         }
 
         /// <summary>
-        /// Loop get response by CSeq.
+        /// 异步连接到 RTSP 服务器
         /// </summary>
-        /// <param name="cseq"></param>
-        /// <returns></returns>
-        public async Task<RTSPResponse> GetResponse(int cseq)
+        public async Task ConnectAsync(CancellationToken ct = default)
         {
+            if (Uri == null)
+                throw new InvalidOperationException("URI not set");
+
+            await ConnectInternalAsync(ct);
+        }
+
+        private void ConnectInternal()
+        {
+            if (Uri == null)
+                throw new InvalidOperationException("URI not set");
+
             try
             {
-                RTSPResponse res = await Task.Run<RTSPResponse>(() =>
-                {
-                    Stopwatch stopwatch = new Stopwatch();
-                    bool hasResult = false;
-                    stopwatch.Start();
-                    while (true)
-                    {
-                        if (WaitResponseTimeout != 0 && stopwatch.ElapsedMilliseconds > WaitResponseTimeout)
-                        {
-                            throw new TimeoutException($"Get data timeout,use time {stopwatch.ElapsedMilliseconds} ms.");
-                        }
-
-                        hasResult = requestResults.TryGetValue(cseq, out RTSPResponse? response);
-
-                        if (hasResult && response != null)
-                        {
-                            return response;
-                        }
-                    }
-                });
-
-                return res;
+                SetState(RTSPConnectionState.Connecting);
+                _client = new TcpClient(Uri.Host, Uri.Port);
+                _tcpStream = _client.GetStream();
+                SetState(RTSPConnectionState.Connected);
+                StartReceiveLoop();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-
+                LastException = ex;
+                SetState(RTSPConnectionState.Disconnected);
+                OnError(ex);
                 throw;
             }
+        }
 
+        private async Task ConnectInternalAsync(CancellationToken ct)
+        {
+            if (Uri == null)
+                throw new InvalidOperationException("URI not set");
+
+            try
+            {
+                SetState(RTSPConnectionState.Connecting);
+                _client = new TcpClient();
+                await _client.ConnectAsync(Uri.Host, Uri.Port);
+                _tcpStream = _client.GetStream();
+                SetState(RTSPConnectionState.Connected);
+                StartReceiveLoop();
+            }
+            catch (Exception ex)
+            {
+                LastException = ex;
+                SetState(RTSPConnectionState.Disconnected);
+                OnError(ex);
+                throw;
+            }
         }
 
         /// <summary>
-        /// Login;
-        /// mode digest
+        /// 断开连接
         /// </summary>
-        /// <param name="username"></param>
-        /// <param name="password"></param>
-        /// <param name="uri"></param>
-        /// <param name="useBackchannel"></param>
-        /// <returns></returns>
-        public async Task<RTSPResponse> LoginDigest(string username, string password, string uri, bool useBackchannel)
+        public async Task DisconnectAsync(CancellationToken ct = default)
         {
+            if (State == RTSPConnectionState.Disconnected)
+                return;
 
-            RTSPRequest request = new RTSPRequest()
-            {
-                Method = "OPTIONS",
-                URI = uri,
-                Version = "RTSP/1.0",
-                CSeq = NewCSeq
-            };
-            RTSPResponse response = await SendAsync(request);
-            if (response.StatusCode != "200")
-            {
-                throw new Exception("Inquiry server Public failed.");
-            }
+            SetState(RTSPConnectionState.Disconnecting);
 
-            var pub = response.Headers.Where(x => x.Key == "Public").FirstOrDefault();
-            Public = pub.Value;
-
-            request = new RTSPRequest()
+            try
             {
-                Method = "DESCRIBE",
-                URI = uri,
-                Version = "RTSP/1.0",
-                Accept = "application/sdp",
-                CSeq = NewCSeq,
-                //Require = "www.onvif.org/ver20/backchannel"
-            };
-            if (useBackchannel)
-            {
-                request.Require = OnvifBackChannel;
-            }
-
-            response = await SendAsync(request);
-            switch (response.StatusCode)
-            {
-                case "200":
+                // 尝试发送 TEARDOWN
+                if (Uri != null && SessionId != null)
+                {
+                    try
                     {
-                        //无需授权
-                        SDP = SDPParser.Parse(response.Response);
+                        await TeardownAsync(ct: ct);
                     }
-                    break;
-                case "401":
+                    catch { }
+                }
+
+                StopReceiveLoop();
+                _tcpStream?.Close();
+                _client?.Close();
+            }
+            finally
+            {
+                _tcpStream = null;
+                _client = null;
+                SessionId = null;
+                SDP = null;
+                SetState(RTSPConnectionState.Disconnected);
+            }
+        }
+
+        /// <summary>
+        /// 重连
+        /// </summary>
+        public async Task ReconnectAsync(CancellationToken ct = default)
+        {
+            await DisconnectAsync(ct);
+            await ConnectInternalAsync(ct);
+
+            // 重新登录
+            if (UserName != null && Password != null && Uri != null)
+            {
+                await LoginDigestAsync(UserName, Password, Uri.AbsoluteUri, HasBackChannelSupported, ct);
+            }
+        }
+
+        #endregion
+
+        #region 接收循环
+
+        private void StartReceiveLoop()
+        {
+            _receiveCts = new CancellationTokenSource();
+            _receiveTask = Task.Run(() => ReceiveLoopAsync(_receiveCts.Token));
+        }
+
+        private void StopReceiveLoop()
+        {
+            _receiveCts?.Cancel();
+            _receiveTask?.Wait(TimeSpan.FromSeconds(5));
+            _receiveCts?.Dispose();
+            _receiveCts = null;
+        }
+
+        private async Task ReceiveLoopAsync(CancellationToken ct)
+        {
+            if (_tcpStream == null) return;
+
+            var buffer = new byte[4096];
+
+            try
+            {
+                while (!ct.IsCancellationRequested && _tcpStream != null)
+                {
+                    int bytesRead = await _tcpStream.ReadAsync(buffer, 0, buffer.Length, ct);
+                    if (bytesRead == 0)
                     {
-                        //需要授权
-                        string realm = "RTSP SERVER";
-                        string nonce = "3e1456b5a39d3b47f90cd2c149b1e24d";
-                        string method = "DESCRIBE";
+                        // 服务器关闭连接
+                        break;
+                    }
 
-                        var auth = response.Headers.Where(x => x.Key == "WWW-Authenticate").FirstOrDefault();
-                        // Digest realm="RTSP SERVER",nonce="3e1456b5a39d3b47f90cd2c149b1e24d",stale="FALSE"
+                    // 检查是否为 RTP 数据 (以 $ 开头)
+                    if (buffer[0] == 0x24 && bytesRead >= 4)
+                    {
+                        // TCP interleaved RTP 数据
+                        byte channel = buffer[1];
+                        int length = (buffer[2] << 8) | buffer[3];
 
-                        if (auth.Value.IndexOf("Digest") != 0)
+                        if (bytesRead >= 4 + length)
                         {
-                            throw new Exception("Server auth mode not Digest");
+                            var rtpData = new byte[length];
+                            Array.Copy(buffer, 4, rtpData, 0, length);
+                            OnDataReceived(rtpData, channel);
+                        }
+                    }
+                    else
+                    {
+                        // RTSP 响应文本
+                        string msg = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                        var response = new RTSPResponse(msg, buffer);
+
+                        // 完成等待的请求
+                        if (_pendingRequests.TryRemove(response.CSeq, out var tcs))
+                        {
+                            tcs.TrySetResult(response);
                         }
 
-                        GetDigestParams(ref realm, ref nonce, auth.Value);
-
-                        UserName = username;
-                        Password = password;
-                        Realm = realm;
-                        Nonce = nonce;
-
-                        //"rtsp://192.168.1.127:554/1/1"
-                        UpdateAuthorization(uri, method);
-                        //request.Authorization = AuthorizationDigest(username, password, uri, realm, nonce, method);
-
-                        request.CSeq = NewCSeq;
-
-                        //Authorization: Digest username=""admin"", realm=""RTSP SERVER"", nonce=""3e1456b5a39d3b47f90cd2c149b1e24d"", uri=""rtsp://192.168.1.127:554/1/1"", response=""8ec02e57386ea9fcd3bf0bb997da1fb8""
-                        response = await SendAsync(request);
-                        if (response.StatusCode == "200")
-                        {
-                            Authorization = request.Authorization;
-                            SDP = SDPParser.Parse(response.Response);
-
-                        }
-
+                        _requestResults.AddOrUpdate(response.CSeq, response, (_, _) => response);
                     }
-                    break;
-                default:
-                    break;
+                }
             }
-
-            if (useBackchannel)
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
             {
-                if (response.StatusCode == "551")
-                {
-                    HasBackChannelSupported = false;
-                }
-
-                if (SDP != null && SDP.MediaDescriptions.Count > 0)
-                {
-                    HasBackChannelSupported = SDP.GetBackChannel() != null;
-                }
-                else
-                {
-                    HasBackChannelSupported = false;
-                }
-
+                LastException = ex;
+                OnError(ex);
             }
+            finally
+            {
+                if (State != RTSPConnectionState.Disconnecting &&
+                    State != RTSPConnectionState.Disconnected)
+                {
+                    SetState(RTSPConnectionState.Disconnected);
+                }
+            }
+        }
 
+        private void OnDataReceived(byte[] data, byte channel)
+        {
+            var packet = new Rtp.RTPPacket(
+                version: 2,
+                padding: false,
+                extension: false,
+                csrcCount: 0,
+                marker: false,
+                payloadType: 0,
+                sequenceNumber: 0,
+                timestamp: 0,
+                ssrc: 0,
+                csrc: Array.Empty<uint>(),
+                payload: data,
+                trackId: channel / 2,
+                streamType: channel % 2 == 0 ? StreamType.Video : StreamType.Audio,
+                raw: data
+            );
+            DataReceived?.Invoke(this, new RtpDataReceivedEventArgs(packet));
+        }
+
+        #endregion
+
+        #region 发送方法
+
+        /// <summary>
+        /// 发送原始数据
+        /// </summary>
+        public async Task SendRawAsync(byte[] data, CancellationToken ct = default)
+        {
+            if (_tcpStream == null)
+                throw new InvalidOperationException("Not connected");
+
+            await _tcpStream.WriteAsync(data, 0, data.Length, ct);
+        }
+
+        /// <summary>
+        /// 发送 RTSP 请求并等待响应
+        /// </summary>
+        public async Task<RTSPResponse> SendRequestAsync(RTSPRequest request, CancellationToken ct = default)
+        {
+            if (_tcpStream == null)
+                throw new InvalidOperationException("Not connected");
+
+            // 创建 TCS 用于等待响应
+            var tcs = new TaskCompletionSource<RTSPResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingRequests[request.CSeq] = tcs;
+
+            // 发送请求
+            string req = RTSPRequest.GetRequest(request);
+            byte[] data = Encoding.UTF8.GetBytes(req);
+            await _tcpStream.WriteAsync(data, 0, data.Length, ct);
+
+            // 等待响应（带超时）
+            using var timeoutCts = new CancellationTokenSource(WaitResponseTimeout);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
+            try
+            {
+                // 注册取消回调
+                using var reg = linkedCts.Token.Register(() => tcs.TrySetCanceled());
+                return await tcs.Task;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                _pendingRequests.TryRemove(request.CSeq, out _);
+                throw new TimeoutException($"RTSP response timeout for CSeq {request.CSeq}");
+            }
+        }
+
+        #endregion
+
+        #region RTSP 方法
+
+        /// <summary>
+        /// OPTIONS - 查询服务器支持的方法
+        /// </summary>
+        public async Task<RTSPResponse> OptionsAsync(CancellationToken ct = default)
+        {
+            var request = CreateRequest("OPTIONS");
+            var response = await SendRequestAsync(request, ct);
+
+            if (response.StatusCode == "200")
+            {
+                var pub = response.Headers.FirstOrDefault(x => x.Key == "Public");
+                Public = pub.Value;
+            }
 
             return response;
         }
 
         /// <summary>
-        /// Update authorization
+        /// DESCRIBE - 获取 SDP 描述
         /// </summary>
-        /// <param name="uri"></param>
-        /// <param name="method"></param>
-        /// <returns></returns>
-        public void UpdateAuthorization(string uri, string method)
+        public async Task<RTSPResponse> DescribeAsync(bool useBackchannel = false, CancellationToken ct = default)
         {
-            //需要授权
-            if (UserName != null && Password != null && Realm != null && Nonce != null)
-            {
-                this.Authorization = AuthorizationDigest(UserName, Password, uri, Realm, Nonce, method);
-            }
-        }
-
-        /// <summary>
-        /// Update authorization by response
-        /// </summary>
-        /// <param name="response"></param>
-        /// <param name="uri"></param>
-        /// <param name="method"></param>
-        /// <returns></returns>
-        public void UpdateAuthorization(RTSPResponse response, string uri, string method)
-        {
-            //需要授权
-            var auth = response.Headers.Where(x => x.Key == "WWW-Authenticate").FirstOrDefault();
-            // Digest realm="RTSP SERVER",nonce="3e1456b5a39d3b47f90cd2c149b1e24d",stale="FALSE"
-
-            UpdateAuthorization(uri, method);
-        }
-
-        /// <summary>
-        /// Setup device channel
-        /// </summary>
-        /// <param name="channelUri"></param>
-        /// <param name="transport"></param>
-        /// <param name="useBackchannel"></param>
-        /// <returns></returns>
-        public async Task<RTSPResponse> Setup(string channelUri, string transport, bool useBackchannel)
-        {
-            if (Uri == null) throw new InvalidOperationException("Not connected");
-
-            RTSPRequest request = new RTSPRequest()
-            {
-                Method = "SETUP",
-                URI = Uri.AbsoluteUri + channelUri,
-                Version = "RTSP/1.0",
-                CSeq = NewCSeq,
-                Transport = transport,
-                Authorization = Authorization,
-            };
+            var request = CreateRequest("DESCRIBE");
+            request.Accept = "application/sdp";
             if (useBackchannel)
-            {
                 request.Require = OnvifBackChannel;
-            }
 
-            UpdateAuthorization(Uri.AbsoluteUri, request.Method);
-            request.Authorization = this.Authorization;
+            var response = await SendRequestAsync(request, ct);
 
-            RTSPResponse res = await SendAsync(request);
-
-            UpdateTimeout(res);
-
-            return res;
-        }
-
-        /// <summary>
-        /// Play
-        /// </summary>
-        /// <param name="channelUri"></param>
-        /// <param name="range"></param>
-        /// <param name="useBackchannel"></param>
-        /// <returns></returns>
-        public async Task<RTSPResponse> Play(string channelUri, string range, bool useBackchannel)
-        {
-            if (Uri == null) throw new InvalidOperationException("Not connected");
-
-            RTSPRequest request = new RTSPRequest()
+            if (response.StatusCode == "200")
             {
-                Method = "PLAY",
-                URI = Uri.AbsoluteUri + channelUri,
-                Version = "RTSP/1.0",
-                CSeq = NewCSeq,
-                Session = this.Session,
-                Authorization = Authorization,
-                Range = range,
-            };
-            if (useBackchannel)
-            {
-                request.Require = OnvifBackChannel;
-            }
-
-            UpdateAuthorization(Uri.AbsoluteUri, request.Method);
-            request.Authorization = this.Authorization;
-
-            RTSPResponse res = await SendAsync(request);
-
-            UpdateTimeout(res);
-
-            return res;
-        }
-
-        /// <summary>
-        /// Close channel
-        /// </summary>
-        /// <param name="channelUri"></param>
-        /// <param name="useBackchannel"></param>
-        /// <returns></returns>
-        public async Task<RTSPResponse> Teardown(string channelUri, bool useBackchannel)
-        {
-            if (Uri == null) throw new InvalidOperationException("Not connected");
-
-            RTSPRequest request = new RTSPRequest()
-            {
-                Method = "TEARDOWN",
-                URI = Uri.AbsoluteUri + channelUri,
-                Version = "RTSP/1.0",
-                CSeq = NewCSeq,
-                Session = this.Session,
-                Authorization = Authorization,
-            };
-            if (useBackchannel)
-            {
-                request.Require = OnvifBackChannel;
-            }
-
-            UpdateAuthorization(Uri.AbsoluteUri, request.Method);
-            request.Authorization = this.Authorization;
-
-            return await SendAsync(request);
-        }
-
-        /// <summary>
-        /// Send G711A format audio to device.
-        /// </summary>
-        /// <param name="audio"></param>
-        /// <param name="fps"></param>
-        /// <param name="sampleRate"></param>
-        /// <param name="ssrc"></param>
-        /// <param name="channel"></param>
-        /// <param name="progress">callback;v1:send progress,v2:packet time</param>
-        /// <returns></returns>
-        public async Task PlayAudio_G711A(byte[] audio, int fps, int sampleRate, long ssrc, byte channel = 0x00, Action<decimal, long>? progress = null)
-        {
-            await PlayAudio_G711(audio, fps, sampleRate, RTPPayloadType.PCMA, ssrc, channel, progress);
-        }
-
-        /// <summary>
-        /// Send G711A format audio to device.
-        /// </summary>
-        /// <param name="audio"></param>
-        /// <param name="fps"></param>
-        /// <param name="sampleRate"></param>
-        /// <param name="g711Type"></param>
-        /// <param name="ssrc"></param>
-        /// <param name="channel"></param>
-        /// <param name="progress">callback;v1:send progress,v2:packet time</param>
-        /// <returns></returns>
-        public async Task PlayAudio_G711(byte[] audio, int fps, int sampleRate, RTPPayloadType g711Type, long ssrc, byte channel = 0x00, Action<decimal, long>? progress = null)
-        {
-            //int packSecLen = 320;
-
-            // 数据包长度
-            int rtspHeaderLen = 4;
-            int rtpHeaderLen = 12;
-
-            int packSecLen = sampleRate / fps;
-            int rtpPackLen = rtpHeaderLen + packSecLen;
-
-            int audioLen = audio.Length;
-
-
-            int packetHeaderLen = rtspHeaderLen + rtpHeaderLen;
-
-            // 每秒发送数据包
-            int packetSecSend = 1000 / fps;
-
-            Stopwatch stopwatch = new Stopwatch();
-
-            for (int i = 0, audioPacketLen = 0; i < (audioPacketLen = audioLen / packSecLen); i++)
-            {
-                stopwatch.Restart();
-
-                long timestamp = Timestamp.GetNowTimestamp();
-                byte[] packet = new byte[packetHeaderLen + packSecLen];
-                packet[0] = 0x24;// Magic
-                packet[1] = channel;// Channel 
-                packet[2] = (byte)((rtpPackLen % (0xffff + 1)) / (0xff + 1));// Length1
-                packet[3] = (byte)((rtpPackLen % (0xffff + 1)) % (0xff + 1));// Length2
-                packet[4] = 0x80;//CSRC False 0x80
-                packet[5] = (byte)g711Type;//Payload type:ITU-T G.711 PCMU(0x00)
-                packet[6] = (byte)(i / (0xff + 1));
-                packet[7] = (byte)(i % (0xff + 1));
-                packet[8] = (byte)((timestamp / (0xffff + 1)) / (0xff + 1));
-                packet[9] = (byte)((timestamp / (0xffff + 1)) % (0xff + 1));
-                packet[10] = (byte)((timestamp % (0xffff + 1)) / (0xff + 1));
-                packet[11] = (byte)((timestamp % (0xffff + 1)) % (0xff + 1));
-                packet[12] = (byte)((ssrc / (0xffff + 1)) / (0xff + 1));
-                packet[13] = (byte)((ssrc / (0xffff + 1)) % (0xff + 1));
-                packet[14] = (byte)((ssrc % (0xffff + 1)) / (0xff + 1));
-                packet[15] = (byte)((ssrc % (0xffff + 1)) % (0xff + 1));
-
-                Array.Copy(audio, i * packSecLen, packet, packetHeaderLen, packSecLen);
-
-                await SendAsync(packet);
-
-                int packetTime = (int)stopwatch.ElapsedMilliseconds;
-                //Console.Error.WriteLine($"{packetTime},{packetSecSend - packetTime < 0}");
-
-                if (progress != null)
+                SDP = SDPParser.Parse(response.Response);
+                if (useBackchannel)
                 {
-                    progress(i / audioPacketLen, packetTime);
+                    HasBackChannelSupported = SDP.GetBackChannel() != null;
                 }
-                stopwatch.Stop();
+            }
+            else if (response.StatusCode == "401")
+            {
+                // 需要认证
+                HandleAuthChallenge(response);
+            }
 
-                Thread.Sleep(packetSecSend - packetTime < 0 ? 0 : packetSecSend - packetTime);
-                //Console.WriteLine($"{packetTime},{packetSecSend - packetTime < 0}");
+            return response;
+        }
 
-                //Task.Run((prog, time) =>
-                //{
-                //    Console.WriteLine($"播放进度：{prog}%,{time} \r\n");
-                //})
-                //Console.Error.WriteLine($"播放进度：{i}/{ audioLen / packSecLen}\r\n");
+        /// <summary>
+        /// SETUP - 设置媒体传输通道
+        /// </summary>
+        public async Task<RTSPResponse> SetupAsync(string channelUri, string transport, bool useBackchannel = false, CancellationToken ct = default)
+        {
+            if (Uri == null)
+                throw new InvalidOperationException("Not connected");
+
+            var request = CreateRequest("SETUP");
+            request.URI = Uri.AbsoluteUri + channelUri;
+            request.Transport = transport;
+            if (useBackchannel)
+                request.Require = OnvifBackChannel;
+
+            UpdateAuthorization(request.Method);
+            request.Authorization = Authorization;
+
+            var response = await SendRequestAsync(request, ct);
+            UpdateSessionFromResponse(response);
+
+            return response;
+        }
+
+        /// <summary>
+        /// PLAY - 开始播放
+        /// </summary>
+        public async Task<RTSPResponse> PlayAsync(string? range = null, bool useBackchannel = false, CancellationToken ct = default)
+        {
+            if (Uri == null)
+                throw new InvalidOperationException("Not connected");
+
+            var request = CreateRequest("PLAY");
+            request.Session = SessionId;
+            if (range != null)
+                request.Range = range;
+            if (useBackchannel)
+                request.Require = OnvifBackChannel;
+
+            UpdateAuthorization(request.Method);
+            request.Authorization = Authorization;
+
+            var response = await SendRequestAsync(request, ct);
+            UpdateSessionFromResponse(response);
+
+            if (response.StatusCode == "200")
+            {
+                SetState(RTSPConnectionState.Playing);
+            }
+
+            return response;
+        }
+
+        /// <summary>
+        /// PAUSE - 暂停播放
+        /// </summary>
+        public async Task<RTSPResponse> PauseAsync(CancellationToken ct = default)
+        {
+            if (Uri == null)
+                throw new InvalidOperationException("Not connected");
+
+            var request = CreateRequest("PAUSE");
+            request.Session = SessionId;
+
+            UpdateAuthorization(request.Method);
+            request.Authorization = Authorization;
+
+            var response = await SendRequestAsync(request, ct);
+
+            if (response.StatusCode == "200")
+            {
+                SetState(RTSPConnectionState.Paused);
+            }
+
+            return response;
+        }
+
+        /// <summary>
+        /// TEARDOWN - 关闭媒体通道
+        /// </summary>
+        public async Task<RTSPResponse> TeardownAsync(string? channelUri = null, bool useBackchannel = false, CancellationToken ct = default)
+        {
+            if (Uri == null)
+                throw new InvalidOperationException("Not connected");
+
+            var request = CreateRequest("TEARDOWN");
+            request.URI = Uri.AbsoluteUri + (channelUri ?? "");
+            request.Session = SessionId;
+            if (useBackchannel)
+                request.Require = OnvifBackChannel;
+
+            UpdateAuthorization(request.Method);
+            request.Authorization = Authorization;
+
+            var response = await SendRequestAsync(request, ct);
+            return response;
+        }
+
+        /// <summary>
+        /// GET_PARAMETER - 获取参数（也用作心跳）
+        /// </summary>
+        public async Task<RTSPResponse> GetParameterAsync(string[]? parameters = null, CancellationToken ct = default)
+        {
+            if (Uri == null)
+                throw new InvalidOperationException("Not connected");
+
+            var request = CreateRequest("GET_PARAMETER");
+            request.Session = SessionId;
+
+            if (parameters != null && parameters.Length > 0)
+            {
+                request.ContentType = "text/parameters";
+                // 构建参数体
+                var sb = new StringBuilder();
+                foreach (var p in parameters)
+                {
+                    sb.AppendLine(p);
+                }
+                request.ContentLength = sb.Length.ToString();
+            }
+
+            UpdateAuthorization(request.Method);
+            request.Authorization = Authorization;
+
+            return await SendRequestAsync(request, ct);
+        }
+
+        /// <summary>
+        /// SET_PARAMETER - 设置参数
+        /// </summary>
+        public async Task<RTSPResponse> SetParameterAsync(Dictionary<string, string> parameters, CancellationToken ct = default)
+        {
+            if (Uri == null)
+                throw new InvalidOperationException("Not connected");
+
+            var request = CreateRequest("SET_PARAMETER");
+            request.Session = SessionId;
+            request.ContentType = "text/parameters";
+
+            var sb = new StringBuilder();
+            foreach (var kvp in parameters)
+            {
+                sb.AppendLine($"{kvp.Key}: {kvp.Value}");
+            }
+            request.ContentLength = sb.Length.ToString();
+
+            UpdateAuthorization(request.Method);
+            request.Authorization = Authorization;
+
+            return await SendRequestAsync(request, ct);
+        }
+
+        /// <summary>
+        /// ANNOUNCE - 发布媒体描述（用于推送）
+        /// </summary>
+        public async Task<RTSPResponse> AnnounceAsync(string sdpContent, CancellationToken ct = default)
+        {
+            if (Uri == null)
+                throw new InvalidOperationException("Not connected");
+
+            var request = CreateRequest("ANNOUNCE");
+            request.ContentType = "application/sdp";
+            request.ContentLength = sdpContent.Length.ToString();
+
+            UpdateAuthorization(request.Method);
+            request.Authorization = Authorization;
+
+            return await SendRequestAsync(request, ct);
+        }
+
+        /// <summary>
+        /// RECORD - 开始录制
+        /// </summary>
+        public async Task<RTSPResponse> RecordAsync(string? range = null, CancellationToken ct = default)
+        {
+            if (Uri == null)
+                throw new InvalidOperationException("Not connected");
+
+            var request = CreateRequest("RECORD");
+            request.Session = SessionId;
+            if (range != null)
+                request.Range = range;
+
+            UpdateAuthorization(request.Method);
+            request.Authorization = Authorization;
+
+            return await SendRequestAsync(request, ct);
+        }
+
+        /// <summary>
+        /// 登录（Digest 认证）
+        /// </summary>
+        public async Task<RTSPResponse> LoginDigestAsync(string username, string password, string uri, bool useBackchannel = false, CancellationToken ct = default)
+        {
+            UserName = username;
+            Password = password;
+
+            // 1. OPTIONS
+            var optionsResponse = await OptionsAsync(ct);
+            if (optionsResponse.StatusCode != "200")
+            {
+                throw new Exception("OPTIONS request failed");
+            }
+
+            // 2. DESCRIBE
+            var describeResponse = await DescribeAsync(useBackchannel, ct);
+
+            if (describeResponse.StatusCode == "401")
+            {
+                // 需要 Digest 认证
+                HandleAuthChallenge(describeResponse);
+
+                // 重新发送 DESCRIBE
+                var request = CreateRequest("DESCRIBE");
+                request.Accept = "application/sdp";
+                if (useBackchannel)
+                    request.Require = OnvifBackChannel;
+
+                UpdateAuthorization(request.Method);
+                request.Authorization = Authorization;
+
+                describeResponse = await SendRequestAsync(request, ct);
+
+                if (describeResponse.StatusCode == "200")
+                {
+                    SDP = SDPParser.Parse(describeResponse.Response);
+                }
+            }
+
+            if (useBackchannel)
+            {
+                HasBackChannelSupported = SDP?.GetBackChannel() != null;
+            }
+
+            return describeResponse;
+        }
+
+        /// <summary>
+        /// 发送 Keep-Alive 心跳
+        /// </summary>
+        public async Task<bool> SendKeepAliveAsync(CancellationToken ct = default)
+        {
+            try
+            {
+                var sw = Stopwatch.StartNew();
+                var response = await GetParameterAsync(ct: ct);
+                sw.Stop();
+
+                KeepAlive?.Invoke(this, new KeepAliveEventArgs(response.StatusCode == "200", (int)sw.ElapsedMilliseconds));
+                return response.StatusCode == "200";
+            }
+            catch (Exception ex)
+            {
+                KeepAlive?.Invoke(this, new KeepAliveEventArgs(false, 0));
+                OnError(ex);
+                return false;
             }
         }
 
+        #endregion
 
-        #region Auth method
-        /// <summary>
-        /// Get digest params by WWW-Authenticate
-        /// </summary>
-        /// <param name="realm"></param>
-        /// <param name="nonce"></param>
-        /// <param name="authHeader"></param>
+        #region 辅助方法
+
+        private RTSPRequest CreateRequest(string method)
+        {
+            return new RTSPRequest
+            {
+                Method = method,
+                URI = Uri?.AbsoluteUri ?? "",
+                Version = "RTSP/1.0",
+                CSeq = Interlocked.Increment(ref _cseq)
+            };
+        }
+
+        private void HandleAuthChallenge(RTSPResponse response)
+        {
+            var auth = response.Headers.FirstOrDefault(x => x.Key == "WWW-Authenticate");
+            if (auth.Value == null || !auth.Value.StartsWith("Digest"))
+            {
+                throw new Exception("Server auth mode not Digest");
+            }
+
+            string realm = "RTSP SERVER";
+            string nonce = "";
+            GetDigestParams(ref realm, ref nonce, auth.Value);
+
+            Realm = realm;
+            Nonce = nonce;
+        }
+
+        private void UpdateAuthorization(string method)
+        {
+            if (UserName != null && Password != null && Realm != null && Nonce != null && Uri != null)
+            {
+                Authorization = AuthorizationDigest(UserName, Password, Uri.AbsoluteUri, Realm, Nonce, method);
+            }
+        }
+
+        private void UpdateSessionFromResponse(RTSPResponse response)
+        {
+            try
+            {
+                var sessionHeader = response.Headers.FirstOrDefault(x => x.Key == "Session");
+                if (sessionHeader.Value != null)
+                {
+                    var parts = sessionHeader.Value.Split(';');
+                    SessionId = parts[0].Trim();
+
+                    foreach (var part in parts)
+                    {
+                        if (part.Trim().StartsWith("timeout="))
+                        {
+                            if (int.TryParse(part.Trim().Substring(8), out int timeout))
+                            {
+                                Timeout = timeout;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LastException = ex;
+            }
+        }
+
+        private void SetState(RTSPConnectionState newState)
+        {
+            var oldState = State;
+            State = newState;
+            StateChanged?.Invoke(this, new RTSPConnectionStateChangedEventArgs(oldState, newState));
+        }
+
+        private void OnError(Exception ex)
+        {
+            Error?.Invoke(this, new RTSPErrorEventArgs(ex));
+        }
+
+        #endregion
+
+        #region 认证方法
+
         public static void GetDigestParams(ref string realm, ref string nonce, string authHeader)
         {
             string[] authVal = authHeader.Remove(0, 7).Split(',');
-            //realm="RTSP SERVER"
             foreach (var item in authVal)
             {
                 int splitIndex = item.IndexOf('=');
+                if (splitIndex < 0) continue;
+
                 string k = item.Substring(0, splitIndex).Trim();
-                string v = item.Substring(splitIndex + 1, item.Length - splitIndex - 1).TrimStart('"').TrimEnd('"');
+                string v = item.Substring(splitIndex + 1).Trim().Trim('"');
 
                 switch (k)
                 {
-                    case "realm":
-                        realm = v;
-                        break;
-                    case "nonce":
-                        nonce = v;
-                        break;
-                    default:
-                        break;
+                    case "realm": realm = v; break;
+                    case "nonce": nonce = v; break;
                 }
             }
         }
 
-        /// <summary>
-        /// Get Digest authorization
-        /// </summary>
-        /// <param name="username"></param>
-        /// <param name="password"></param>
-        /// <param name="uri"></param>
-        /// <param name="realm"></param>
-        /// <param name="nonce"></param>
-        /// <param name="method"></param>
-        /// <returns></returns>
         public static string AuthorizationDigest(string username, string password, string uri, string realm, string nonce, string method)
         {
-            string m1 = $@"{username}:{realm}:{password}".Md532().ToLower();
-            string m2 = $@"{method}:{uri}".Md532().ToLower();
-            string dig = $@"{m1}:{nonce}:{m2}".Md532().ToLower();
+            string ha1 = $"{username}:{realm}:{password}".Md532().ToLower();
+            string ha2 = $"{method}:{uri}".Md532().ToLower();
+            string response = $"{ha1}:{nonce}:{ha2}".Md532().ToLower();
 
-            return $@"Digest username=""{username}"", realm=""{realm}"", nonce=""{nonce}"", uri=""{uri}"", response=""{dig}""";
+            return $"Digest username=\"{username}\", realm=\"{realm}\", nonce=\"{nonce}\", uri=\"{uri}\", response=\"{response}\"";
+        }
+
+        #endregion
+
+        #region 音频发送
+
+        /// <summary>
+        /// 发送 G.711A 音频
+        /// </summary>
+        public async Task PlayAudio_G711A(byte[] audio, int fps, int sampleRate, long ssrc, byte channel = 0x00, Action<decimal, long>? progress = null, CancellationToken ct = default)
+        {
+            await PlayAudio_G711(audio, fps, sampleRate, RTPPayloadType.PCMA, ssrc, channel, progress, ct);
+        }
+
+        /// <summary>
+        /// 发送 G.711 音频
+        /// </summary>
+        public async Task PlayAudio_G711(byte[] audio, int fps, int sampleRate, RTPPayloadType codecType, long ssrc, byte channel = 0x00, Action<decimal, long>? progress = null, CancellationToken ct = default)
+        {
+            int rtspHeaderLen = 4;
+            int rtpHeaderLen = 12;
+            int packSecLen = sampleRate / fps;
+            int rtpPackLen = rtpHeaderLen + packSecLen;
+            int audioLen = audio.Length;
+            int packetHeaderLen = rtspHeaderLen + rtpHeaderLen;
+            int packetIntervalMs = 1000 / fps;
+            int totalPackets = audioLen / packSecLen;
+
+            // 在循环外创建 Stopwatch，避免每次分配
+            var sw = new Stopwatch();
+
+            for (int i = 0; i < totalPackets; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                sw.Restart();
+
+                long timestamp = Timestamp.GetNowTimestamp();
+                byte[] packet = new byte[packetHeaderLen + packSecLen];
+
+                // RTSP Interleaved Header
+                packet[0] = 0x24; // Magic
+                packet[1] = channel;
+                packet[2] = (byte)((rtpPackLen >> 8) & 0xFF);
+                packet[3] = (byte)(rtpPackLen & 0xFF);
+
+                // RTP Header
+                packet[4] = 0x80; // V=2, P=0, X=0, CC=0
+                packet[5] = (byte)codecType;
+                packet[6] = (byte)((i >> 8) & 0xFF);
+                packet[7] = (byte)(i & 0xFF);
+                packet[8] = (byte)((timestamp >> 24) & 0xFF);
+                packet[9] = (byte)((timestamp >> 16) & 0xFF);
+                packet[10] = (byte)((timestamp >> 8) & 0xFF);
+                packet[11] = (byte)(timestamp & 0xFF);
+                packet[12] = (byte)((ssrc >> 24) & 0xFF);
+                packet[13] = (byte)((ssrc >> 16) & 0xFF);
+                packet[14] = (byte)((ssrc >> 8) & 0xFF);
+                packet[15] = (byte)(ssrc & 0xFF);
+
+                Array.Copy(audio, i * packSecLen, packet, packetHeaderLen, packSecLen);
+                await SendRawAsync(packet, ct);
+
+                sw.Stop();
+                int elapsed = (int)sw.ElapsedMilliseconds;
+                progress?.Invoke((decimal)i / totalPackets, elapsed);
+
+                int delay = packetIntervalMs - elapsed;
+                if (delay > 0)
+                {
+                    await Task.Delay(delay, ct);
+                }
+            }
         }
 
         #endregion
 
         #region Dispose
-        private bool disposedValue;
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
 
         protected virtual void Dispose(bool disposing)
         {
-            if (!disposedValue)
+            if (!_disposed)
             {
                 if (disposing)
                 {
-                    // TODO: 释放托管状态(托管对象)
-
                     try
                     {
-                        if (Uri != null)
-                        {
-                            Teardown(Uri.AbsoluteUri, true).Wait();
-                        }
+                        DisconnectAsync().GetAwaiter().GetResult();
                     }
-                    finally
-                    {
-                        tcpStream?.Flush();
-                        tcpStream?.Close();
-                        client?.Close();
-                    }
+                    catch { }
 
+                    _receiveCts?.Dispose();
+                    _tcpStream?.Dispose();
+                    _client?.Dispose();
                 }
 
-                // TODO: 释放未托管的资源(未托管的对象)并替代终结器
-                // TODO: 将大型字段设置为 null
-                disposedValue = true;
-
-                requestResults = null!;
-                Uri = null;
-                Exception = null;
+                _disposed = true;
             }
         }
 
-        // // TODO: 仅当“Dispose(bool disposing)”拥有用于释放未托管资源的代码时才替代终结器
-        // ~RTSPSession()
-        // {
-        //     // 不要更改此代码。请将清理代码放入“Dispose(bool disposing)”方法中
-        //     Dispose(disposing: false);
-        // }
-
-        void IDisposable.Dispose()
-        {
-            // 不要更改此代码。请将清理代码放入“Dispose(bool disposing)”方法中
-            Dispose(disposing: true);
-            GC.SuppressFinalize(this);
-        }
         #endregion
-
     }
-
 }
