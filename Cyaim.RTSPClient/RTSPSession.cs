@@ -1,4 +1,5 @@
 ﻿using Cyaim.RTSPClient.Common;
+using Cyaim.RTSPClient.Media;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -51,7 +52,7 @@ namespace Cyaim.RTSPClient
 
         public string? Authorization { get; set; }
 
-        public SDP? SDP { get; set; }
+        public SDPSession? SDP { get; set; }
 
 
         public string? Session { get; set; }
@@ -331,7 +332,7 @@ namespace Cyaim.RTSPClient
                 case "200":
                     {
                         //无需授权
-                        SDP = new SDP(response.Response);
+                        SDP = SDPParser.Parse(response.Response);
                     }
                     break;
                 case "401":
@@ -367,7 +368,7 @@ namespace Cyaim.RTSPClient
                         if (response.StatusCode == "200")
                         {
                             Authorization = request.Authorization;
-                            SDP = new SDP(response.Response);
+                            SDP = SDPParser.Parse(response.Response);
 
                         }
 
@@ -384,9 +385,9 @@ namespace Cyaim.RTSPClient
                     HasBackChannelSupported = false;
                 }
 
-                if (SDP != null && SDP.MediaDescribes.Count > 0)
+                if (SDP != null && SDP.MediaDescriptions.Count > 0)
                 {
-                    HasBackChannelSupported = SDP.MediaDescribes.FirstOrDefault(x => x.a.FirstOrDefault(y => y == "sendonly") != null) != null;
+                    HasBackChannelSupported = SDP.GetBackChannel() != null;
                 }
                 else
                 {

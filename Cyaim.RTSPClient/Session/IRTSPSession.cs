@@ -28,7 +28,7 @@ namespace Cyaim.RTSPClient.Session
         /// <summary>
         /// SDP会话描述
         /// </summary>
-        SDP SDP { get; }
+        SDPSession? SDP { get; }
 
         /// <summary>
         /// RTSP会话ID
