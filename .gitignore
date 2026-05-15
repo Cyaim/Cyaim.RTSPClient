@@ -2,9 +2,55 @@
 # 此 .gitignore 文件已由 Microsoft(R) Visual Studio 自动创建。
 ################################################################################
 
-/.vs/Cyaim.RTSPClient
-/Cyaim.RTSPClient/bin/Debug
-/Cyaim.RTSPClient/obj
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# 编译输出
+**/[Bb]in/
+**/[Oo]bj/
+**/[Dd]ebug/
+**/[Rr]elease/
+**/x64/
+**/x86/
+**/build/
+**/Build/
+
+# NuGet
+*.nupkg
+*.snupkg
+**/packages/
+*.nuget.props
+*.nuget.targets
+
+# .NET
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Rider
+.idea/
+*.sln.iml
+
+# VS Code
+.vscode/
+
+# OS 文件
+.DS_Store
+Thumbs.db
+desktop.ini
 
 # Sisyphus 工作计划
 .sisyphus/
+
+# 日志
+*.log
+logs/
+
+# 临时文件
+*.tmp
+*.temp
+~$*

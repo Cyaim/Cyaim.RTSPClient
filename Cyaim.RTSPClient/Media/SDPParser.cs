@@ -7,17 +7,17 @@ namespace Cyaim.RTSPClient.Media
     /// <summary>
     /// RFC 4566 规范的 SDP 解析器
     /// </summary>
-    public class SdpParser
+    public class SDPParser
     {
         /// <summary>
         /// 解析 SDP 文本
         /// </summary>
-        public static SdpSession Parse(string sdpText)
+        public static SDPSession Parse(string sdpText)
         {
             if (string.IsNullOrEmpty(sdpText))
                 throw new ArgumentNullException(nameof(sdpText));
 
-            var session = new SdpSession();
+            var session = new SDPSession();
             var lines = sdpText.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
 
             MediaDescription? currentMedia = null;
@@ -113,11 +113,11 @@ namespace Cyaim.RTSPClient.Media
             return int.TryParse(value, out int v) ? v : 0;
         }
 
-        private static SdpOrigin ParseOrigin(string value)
+        private static SDPOrigin ParseOrigin(string value)
         {
             // o=<username> <sess-id> <sess-version> <nettype> <addrtype> <unicast-address>
             var parts = value.Split(' ');
-            return new SdpOrigin
+            return new SDPOrigin
             {
                 Username = parts.Length > 0 ? parts[0] : "-",
                 SessionId = parts.Length > 1 ? parts[1] : "0",
@@ -128,11 +128,11 @@ namespace Cyaim.RTSPClient.Media
             };
         }
 
-        private static SdpConnection ParseConnection(string value)
+        private static SDPConnection ParseConnection(string value)
         {
             // c=<nettype> <addrtype> <connection-address>
             var parts = value.Split(' ');
-            var conn = new SdpConnection
+            var conn = new SDPConnection
             {
                 NetworkType = parts.Length > 0 ? parts[0] : "IN",
                 AddressType = parts.Length > 1 ? parts[1] : "IP4",
@@ -153,33 +153,33 @@ namespace Cyaim.RTSPClient.Media
             return conn;
         }
 
-        private static SdpBandwidth ParseBandwidth(string value)
+        private static SDPBandwidth ParseBandwidth(string value)
         {
             // b=<bwtype>:<bandwidth>
             var parts = value.Split(':');
-            return new SdpBandwidth
+            return new SDPBandwidth
             {
                 Type = parts.Length > 0 ? parts[0] : "AS",
                 Value = parts.Length > 1 && int.TryParse(parts[1], out int bw) ? bw : 0
             };
         }
 
-        private static SdpTiming ParseTiming(string value)
+        private static SDPTiming ParseTiming(string value)
         {
             // t=<start-time> <stop-time>
             var parts = value.Split(' ');
-            return new SdpTiming
+            return new SDPTiming
             {
                 StartTime = parts.Length > 0 && long.TryParse(parts[0], out long start) ? start : 0,
                 StopTime = parts.Length > 1 && long.TryParse(parts[1], out long stop) ? stop : 0
             };
         }
 
-        private static SdpRepeatTime ParseRepeatTime(string value)
+        private static SDPRepeatTime ParseRepeatTime(string value)
         {
             // r=<repeat interval> <active duration> <offsets from start-time>
             var parts = value.Split(' ');
-            return new SdpRepeatTime
+            return new SDPRepeatTime
             {
                 RepeatInterval = parts.Length > 0 ? parts[0] : "",
                 ActiveDuration = parts.Length > 1 ? parts[1] : "",
@@ -187,19 +187,19 @@ namespace Cyaim.RTSPClient.Media
             };
         }
 
-        private static SdpAttribute ParseAttribute(string value)
+        private static SDPAttribute ParseAttribute(string value)
         {
             // a=<attribute>:<value> 或 a=<attribute>
             int colonIndex = value.IndexOf(':');
             if (colonIndex >= 0)
             {
-                return new SdpAttribute
+                return new SDPAttribute
                 {
                     Name = value.Substring(0, colonIndex),
                     Value = value.Substring(colonIndex + 1)
                 };
             }
-            return new SdpAttribute { Name = value };
+            return new SDPAttribute { Name = value };
         }
 
         private static MediaDescription ParseMedia(string value)
@@ -278,22 +278,22 @@ namespace Cyaim.RTSPClient.Media
     /// <summary>
     /// SDP 会话描述
     /// </summary>
-    public class SdpSession
+    public class SDPSession
     {
         public int Version { get; set; }
-        public SdpOrigin? Origin { get; set; }
+        public SDPOrigin? Origin { get; set; }
         public string SessionName { get; set; } = "";
         public string? SessionInformation { get; set; }
         public string? Uri { get; set; }
         public string? Email { get; set; }
         public string? Phone { get; set; }
-        public SdpConnection? Connection { get; set; }
-        public SdpBandwidth? Bandwidth { get; set; }
-        public SdpTiming? Timing { get; set; }
-        public List<SdpRepeatTime> RepeatTimes { get; set; } = new();
+        public SDPConnection? Connection { get; set; }
+        public SDPBandwidth? Bandwidth { get; set; }
+        public SDPTiming? Timing { get; set; }
+        public List<SDPRepeatTime> RepeatTimes { get; set; } = new();
         public string? TimeZoneAdjustments { get; set; }
         public string? EncryptionKey { get; set; }
-        public List<SdpAttribute> Attributes { get; set; } = new();
+        public List<SDPAttribute> Attributes { get; set; } = new();
         public List<MediaDescription> MediaDescriptions { get; set; } = new();
 
         /// <summary>
@@ -341,7 +341,7 @@ namespace Cyaim.RTSPClient.Media
     /// <summary>
     /// SDP Origin (o=)
     /// </summary>
-    public class SdpOrigin
+    public class SDPOrigin
     {
         public string Username { get; set; } = "-";
         public string SessionId { get; set; } = "0";
@@ -354,7 +354,7 @@ namespace Cyaim.RTSPClient.Media
     /// <summary>
     /// SDP Connection (c=)
     /// </summary>
-    public class SdpConnection
+    public class SDPConnection
     {
         public string NetworkType { get; set; } = "IN";
         public string AddressType { get; set; } = "IP4";
@@ -366,7 +366,7 @@ namespace Cyaim.RTSPClient.Media
     /// <summary>
     /// SDP Bandwidth (b=)
     /// </summary>
-    public class SdpBandwidth
+    public class SDPBandwidth
     {
         public string Type { get; set; } = "AS";
         public int Value { get; set; }
@@ -375,7 +375,7 @@ namespace Cyaim.RTSPClient.Media
     /// <summary>
     /// SDP Timing (t=)
     /// </summary>
-    public class SdpTiming
+    public class SDPTiming
     {
         public long StartTime { get; set; }
         public long StopTime { get; set; }
@@ -384,7 +384,7 @@ namespace Cyaim.RTSPClient.Media
     /// <summary>
     /// SDP Repeat Time (r=)
     /// </summary>
-    public class SdpRepeatTime
+    public class SDPRepeatTime
     {
         public string RepeatInterval { get; set; } = "";
         public string ActiveDuration { get; set; } = "";
@@ -394,7 +394,7 @@ namespace Cyaim.RTSPClient.Media
     /// <summary>
     /// SDP Attribute (a=)
     /// </summary>
-    public class SdpAttribute
+    public class SDPAttribute
     {
         public string Name { get; set; } = "";
         public string? Value { get; set; }
@@ -411,10 +411,10 @@ namespace Cyaim.RTSPClient.Media
         public string Protocol { get; set; } = "";
         public List<string> Formats { get; set; } = new();
         public string? MediaTitle { get; set; }
-        public SdpConnection? Connection { get; set; }
-        public SdpBandwidth? Bandwidth { get; set; }
+        public SDPConnection? Connection { get; set; }
+        public SDPBandwidth? Bandwidth { get; set; }
         public string? EncryptionKey { get; set; }
-        public List<SdpAttribute> Attributes { get; set; } = new();
+        public List<SDPAttribute> Attributes { get; set; } = new();
         public string? ControlUri { get; set; }
         public MediaDirection Direction { get; set; } = MediaDirection.SendRecv;
         public Dictionary<int, CodecInfo> Codecs { get; set; } = new();

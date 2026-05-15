@@ -615,7 +615,7 @@ namespace Cyaim.RTSPClient
                 stopwatch.Stop();
 
                 Thread.Sleep(packetSecSend - packetTime < 0 ? 0 : packetSecSend - packetTime);
-                Console.WriteLine($"{packetTime},{packetSecSend - packetTime < 0}");
+                //Console.WriteLine($"{packetTime},{packetSecSend - packetTime < 0}");
 
                 //Task.Run((prog, time) =>
                 //{
