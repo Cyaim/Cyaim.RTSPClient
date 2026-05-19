@@ -186,9 +186,24 @@ public partial class MainWindow : Window
     {
         if (sender is Button button && button.Tag is string path)
         {
-            Log($"Starting stream: {path}");
-            // TODO: 实现流启动
-            await Task.CompletedTask;
+            try
+            {
+                Log($"Starting stream: {path}");
+                
+                if (await _serverService.StartStreamAsync(path))
+                {
+                    RefreshStreams();
+                    Log($"Stream started: {path}");
+                }
+                else
+                {
+                    Log($"Failed to start stream: {path}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Error starting stream: {ex.Message}");
+            }
         }
     }
 
@@ -196,9 +211,24 @@ public partial class MainWindow : Window
     {
         if (sender is Button button && button.Tag is string path)
         {
-            Log($"Stopping stream: {path}");
-            // TODO: 实现流停止
-            await Task.CompletedTask;
+            try
+            {
+                Log($"Stopping stream: {path}");
+                
+                if (await _serverService.StopStreamAsync(path))
+                {
+                    RefreshStreams();
+                    Log($"Stream stopped: {path}");
+                }
+                else
+                {
+                    Log($"Failed to stop stream: {path}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Error stopping stream: {ex.Message}");
+            }
         }
     }
 

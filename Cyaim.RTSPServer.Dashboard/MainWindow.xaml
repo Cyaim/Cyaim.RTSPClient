@@ -530,6 +530,9 @@
                                                                 <DataTrigger Binding="{Binding Status}" Value="Ready">
                                                                     <Setter Property="Background" Value="#fef3c7"/>
                                                                 </DataTrigger>
+                                                                <DataTrigger Binding="{Binding Status}" Value="Stopped">
+                                                                    <Setter Property="Background" Value="#fee2e2"/>
+                                                                </DataTrigger>
                                                             </Style.Triggers>
                                                         </Style>
                                                     </Border.Style>
@@ -544,6 +547,9 @@
                                                                     <DataTrigger Binding="{Binding Status}" Value="Ready">
                                                                         <Setter Property="Foreground" Value="#d97706"/>
                                                                     </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding Status}" Value="Stopped">
+                                                                        <Setter Property="Foreground" Value="#dc2626"/>
+                                                                    </DataTrigger>
                                                                 </Style.Triggers>
                                                             </Style>
                                                         </TextBlock.Style>
@@ -555,16 +561,17 @@
                                     <DataGridTemplateColumn Header="ACTIONS" Width="180">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
-                                                <StackPanel Orientation="Horizontal"
-                                                            IsEnabled="{Binding DataContext.IsServerRunning, RelativeSource={RelativeSource AncestorType=Window}}">
+                                                <StackPanel Orientation="Horizontal">
                                                     <Button x:Name="StartBtn" Content="▶" Margin="0,0,4,0" Padding="8,4" 
                                                             Style="{StaticResource SuccessActionButton}"
                                                             Tag="{Binding Path}" Click="OnStartStream"
-                                                            ToolTip="Start Stream"/>
+                                                            ToolTip="Start Stream"
+                                                            IsEnabled="{Binding DataContext.IsServerRunning, RelativeSource={RelativeSource AncestorType=Window}}"/>
                                                     <Button x:Name="StopBtn" Content="⏹" Margin="0,0,4,0" Padding="8,4" 
                                                             Style="{StaticResource ActionButton}"
                                                             Tag="{Binding Path}" Click="OnStopStream"
-                                                            ToolTip="Stop Stream"/>
+                                                            ToolTip="Stop Stream"
+                                                            IsEnabled="{Binding DataContext.IsServerRunning, RelativeSource={RelativeSource AncestorType=Window}}"/>
                                                     <Button Content="✎" Margin="0,0,4,0" Padding="8,4" 
                                                             Style="{StaticResource ActionButton}"
                                                             Tag="{Binding Path}" Click="OnEditStream"
@@ -575,11 +582,14 @@
                                                             ToolTip="Remove Stream"/>
                                                 </StackPanel>
                                                 <DataTemplate.Triggers>
-                                                    <DataTrigger Binding="{Binding Status}" Value="Streaming">
-                                                        <Setter TargetName="StartBtn" Property="IsEnabled" Value="False"/>
+                                                    <DataTrigger Binding="{Binding Status}" Value="Stopped">
+                                                        <Setter TargetName="StopBtn" Property="IsEnabled" Value="False"/>
                                                     </DataTrigger>
                                                     <DataTrigger Binding="{Binding Status}" Value="Ready">
-                                                        <Setter TargetName="StopBtn" Property="IsEnabled" Value="False"/>
+                                                        <Setter TargetName="StartBtn" Property="IsEnabled" Value="False"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding Status}" Value="Streaming">
+                                                        <Setter TargetName="StartBtn" Property="IsEnabled" Value="False"/>
                                                     </DataTrigger>
                                                 </DataTemplate.Triggers>
                                             </DataTemplate>
@@ -636,6 +646,9 @@
                                                             <DataTrigger Binding="{Binding Status}" Value="Streaming">
                                                                 <Setter Property="Background" Value="#dcfce7"/>
                                                             </DataTrigger>
+                                                            <DataTrigger Binding="{Binding Status}" Value="Stopped">
+                                                                <Setter Property="Background" Value="#fee2e2"/>
+                                                            </DataTrigger>
                                                         </Style.Triggers>
                                                     </Style>
                                                 </Border.Style>
@@ -646,6 +659,9 @@
                                                             <Style.Triggers>
                                                                 <DataTrigger Binding="{Binding Status}" Value="Streaming">
                                                                     <Setter Property="Foreground" Value="#16a34a"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding Status}" Value="Stopped">
+                                                                    <Setter Property="Foreground" Value="#dc2626"/>
                                                                 </DataTrigger>
                                                             </Style.Triggers>
                                                         </Style>

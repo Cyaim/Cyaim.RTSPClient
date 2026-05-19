@@ -16,6 +16,12 @@ public sealed class StreamManager : IDisposable
     private readonly RtspServerOptions _options;
     private readonly ConcurrentDictionary<string, StreamInfo> _streams = new();
     private readonly ConcurrentDictionary<string, IMediaSource> _sources = new();
+    private long _totalBytesSent;
+
+    /// <summary>
+    /// 所有流累计发送的字节数
+    /// </summary>
+    public long TotalBytesSent => Interlocked.Read(ref _totalBytesSent);
 
     public StreamManager(ILogger<StreamManager> logger, IOptions<RtspServerOptions> options)
     {
@@ -30,7 +36,7 @@ public sealed class StreamManager : IDisposable
     {
         foreach (var config in _options.Streams)
         {
-            await CreateStreamAsync(config, ct);
+            await CreateStreamAsync(config, ct, autoStart: false);
         }
 
         _logger.LogInformation("Initialized {Count} streams", _streams.Count);
@@ -39,7 +45,10 @@ public sealed class StreamManager : IDisposable
     /// <summary>
     /// 创建流
     /// </summary>
-    public async Task<StreamInfo> CreateStreamAsync(StreamConfig config, CancellationToken ct)
+    /// <param name="config">流配置</param>
+    /// <param name="ct">取消令牌</param>
+    /// <param name="autoStart">是否自动启动媒体源</param>
+    public async Task<StreamInfo> CreateStreamAsync(StreamConfig config, CancellationToken ct, bool autoStart = true)
     {
         var streamInfo = new StreamInfo
         {
@@ -61,7 +70,8 @@ public sealed class StreamManager : IDisposable
                 _ => 8000
             },
             Channels = 1,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+            IsRunning = false  // 默认不运行
         };
 
         _streams.TryAdd(config.Path, streamInfo);
@@ -71,19 +81,25 @@ public sealed class StreamManager : IDisposable
         if (source != null)
         {
             _sources.TryAdd(config.Path, source);
-            await source.StartAsync(ct);
             
-            // 从媒体源获取 SPS/PPS 并保存到 StreamInfo
-            if (source.SpsData != null)
+            if (autoStart)
             {
-                streamInfo.SpsData = source.SpsData;
-            }
-            if (source.PpsData != null)
-            {
-                streamInfo.PpsData = source.PpsData;
+                await source.StartAsync(ct);
+                streamInfo.IsRunning = true;
+                
+                // 从媒体源获取 SPS/PPS 并保存到 StreamInfo
+                if (source.SpsData != null)
+                {
+                    streamInfo.SpsData = source.SpsData;
+                }
+                if (source.PpsData != null)
+                {
+                    streamInfo.PpsData = source.PpsData;
+                }
             }
             
-            _logger.LogInformation("Stream created: {Path} ({Name})", config.Path, config.Name);
+            _logger.LogInformation("Stream created: {Path} ({Name}), AutoStart={AutoStart}", 
+                config.Path, config.Name, autoStart);
         }
 
         return streamInfo;
@@ -106,6 +122,52 @@ public sealed class StreamManager : IDisposable
     }
 
     /// <summary>
+    /// 启动指定流的媒体源
+    /// </summary>
+    public async Task<bool> StartStreamAsync(string path, CancellationToken ct)
+    {
+        if (_sources.TryGetValue(path, out var source) && _sources.ContainsKey(path))
+        {
+            await source.StartAsync(ct);
+            
+            // 更新 StreamInfo
+            if (_streams.TryGetValue(path, out var streamInfo))
+            {
+                streamInfo.IsRunning = true;
+                
+                // 获取 SPS/PPS（可能在启动后才可用）
+                if (source.SpsData != null)
+                    streamInfo.SpsData = source.SpsData;
+                if (source.PpsData != null)
+                    streamInfo.PpsData = source.PpsData;
+            }
+            
+            _logger.LogInformation("Stream started: {Path}", path);
+            return true;
+        }
+
+        _logger.LogWarning("Stream not found for start: {Path}", path);
+        return false;
+    }
+
+    /// <summary>
+    /// 停止指定流的媒体源
+    /// </summary>
+    public async Task<bool> StopStreamAsync(string path, CancellationToken ct)
+    {
+        if (_sources.TryGetValue(path, out var source) && _streams.TryGetValue(path, out var streamInfo))
+        {
+            await source.StopAsync(ct);
+            streamInfo.IsRunning = false;
+            _logger.LogInformation("Stream stopped: {Path}", path);
+            return true;
+        }
+
+        _logger.LogWarning("Stream not found for stop: {Path}", path);
+        return false;
+    }
+
+    /// <summary>
     /// 删除流
     /// </summary>
     public async Task RemoveStreamAsync(string path, CancellationToken ct)
@@ -118,6 +180,44 @@ public sealed class StreamManager : IDisposable
 
         _streams.TryRemove(path, out _);
         _logger.LogInformation("Stream removed: {Path}", path);
+    }
+
+    /// <summary>
+    /// 记录流发送的字节数
+    /// </summary>
+    public void RecordBytesSent(string path, int bytes)
+    {
+        Interlocked.Add(ref _totalBytesSent, bytes);
+        if (_streams.TryGetValue(path, out var streamInfo))
+        {
+            streamInfo.TotalBytesSent += bytes;
+        }
+    }
+
+    /// <summary>
+    /// 增加流的活跃客户端计数
+    /// </summary>
+    public void IncrementActiveClients(string path)
+    {
+        if (_streams.TryGetValue(path, out var streamInfo))
+        {
+            Interlocked.Increment(ref streamInfo.activeClientCount);
+            _logger?.LogDebug("Stream {Path}: clients={Count}", path, streamInfo.activeClientCount);
+        }
+    }
+
+    /// <summary>
+    /// 减少流的活跃客户端计数
+    /// </summary>
+    public void DecrementActiveClients(string path)
+    {
+        if (_streams.TryGetValue(path, out var streamInfo))
+        {
+            Interlocked.Decrement(ref streamInfo.activeClientCount);
+            if (streamInfo.activeClientCount < 0)
+                streamInfo.activeClientCount = 0;
+            _logger?.LogDebug("Stream {Path}: clients={Count}", path, streamInfo.activeClientCount);
+        }
     }
 
     /// <summary>
@@ -176,7 +276,12 @@ public class StreamInfo
     public int Channels { get; set; }
     public DateTime CreatedAt { get; set; }
     public long TotalBytesSent { get; set; }
-    public int ActiveClients { get; set; }
+    internal long activeClientCount;
+    public int ActiveClients => (int)Interlocked.Read(ref activeClientCount);
+    /// <summary>
+    /// 媒体源是否正在运行
+    /// </summary>
+    public bool IsRunning { get; set; } = true;
     /// <summary>
     /// SPS 数据（用于 SDP sprop-parameter-sets）
     /// </summary>
@@ -238,8 +343,10 @@ public class FileMediaSource : IMediaSource
 {
     private readonly StreamConfig _config;
     private bool _running;
-    private uint _timestamp;
-    private ushort _sequenceNumber;
+    private uint _videoTimestamp;
+    private uint _audioTimestamp;
+    private ushort _videoSequenceNumber;
+    private ushort _audioSequenceNumber;
 
     // H.264 NAL unit types
     private const byte NAL_SPS = 7;
@@ -335,12 +442,57 @@ public class FileMediaSource : IMediaSource
         
         System.Diagnostics.Debug.WriteLine($"FileMediaSource: Separated {videoNalUnits.Count} video NAL units, SPS={spsData?.Length ?? 0} bytes, PPS={ppsData?.Length ?? 0} bytes");
 
+        // 提取音频数据（如果有）
+        List<byte[]> audioSamples = new();
+        int audioSampleRate = _config.AudioCodec switch
+        {
+            AudioCodecType.PCMA => 8000,
+            AudioCodecType.PCMU => 8000,
+            AudioCodecType.AAC => 44100,
+            AudioCodecType.OPUS => 48000,
+            _ => 8000
+        };
+        
+        if (_config.EnableAudio && _config.AudioCodec != AudioCodecType.None)
+        {
+            // TODO: 从 MP4 提取音频样本
+            // 目前仅支持视频，音频需要额外实现 MP4 音频轨道解析
+            System.Diagnostics.Debug.WriteLine("FileMediaSource: Audio support not yet implemented for MP4 files");
+        }
+
         int frameCount = 0;
         int nalIndex = 0;
+        int audioIndex = 0;
         bool loop = _config.Loop;
+        
+        // 使用 Stopwatch 实现精确计时
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        long frameIntervalTicks = (long)(System.Diagnostics.Stopwatch.Frequency / (double)_config.Framerate);
+        long nextFrameTicks = stopwatch.ElapsedTicks;
+        long startTimeTicks = stopwatch.ElapsedTicks;
 
         while (_running && !ct.IsCancellationRequested)
         {
+            // 精确等待到下一帧时间
+            long currentTicks = stopwatch.ElapsedTicks;
+            if (currentTicks < nextFrameTicks)
+            {
+                // 计算需要等待的时间（毫秒）
+                long waitTicks = nextFrameTicks - currentTicks;
+                int waitMs = (int)(waitTicks * 1000 / System.Diagnostics.Stopwatch.Frequency);
+                if (waitMs > 0)
+                {
+                    await Task.Delay(waitMs, ct);
+                }
+                // 忙等待剩余的微秒级时间
+                while (stopwatch.ElapsedTicks < nextFrameTicks && !ct.IsCancellationRequested)
+                {
+                    Thread.SpinWait(100);
+                }
+            }
+            
+            nextFrameTicks += frameIntervalTicks;
+
             byte[] nalData = videoNalUnits[nalIndex];
             byte nalType = (byte)(nalData[0] & 0x1F);
 
@@ -361,33 +513,33 @@ public class FileMediaSource : IMediaSource
                 System.Diagnostics.Debug.WriteLine($"Sending SPS/PPS before IDR frame (frame {frameCount})");
                 
                 // SPS - 不设置 marker bit
-                var spsRtpPackets = CreateRtpPackets(spsData, _sequenceNumber, _timestamp, false);
+                var spsRtpPackets = CreateRtpPackets(spsData, _videoSequenceNumber, _videoTimestamp, false);
                 foreach (var (data, seq) in spsRtpPackets)
                 {
                     yield return new RtpPacket
                     {
                         Data = data,
                         TrackId = 0,
-                        Timestamp = _timestamp,
+                        Timestamp = _videoTimestamp,
                         SequenceNumber = seq,
                         IsKeyFrame = false
                     };
-                    _sequenceNumber = (ushort)(seq + 1);
+                    _videoSequenceNumber = (ushort)(seq + 1);
                 }
                 
                 // PPS - 不设置 marker bit
-                var ppsRtpPackets = CreateRtpPackets(ppsData, _sequenceNumber, _timestamp, false);
+                var ppsRtpPackets = CreateRtpPackets(ppsData, _videoSequenceNumber, _videoTimestamp, false);
                 foreach (var (data, seq) in ppsRtpPackets)
                 {
                     yield return new RtpPacket
                     {
                         Data = data,
                         TrackId = 0,
-                        Timestamp = _timestamp,
+                        Timestamp = _videoTimestamp,
                         SequenceNumber = seq,
                         IsKeyFrame = false
                     };
-                    _sequenceNumber = (ushort)(seq + 1);
+                    _videoSequenceNumber = (ushort)(seq + 1);
                 }
             }
 
@@ -421,7 +573,7 @@ public class FileMediaSource : IMediaSource
             }
 
             // 创建 RTP 包（支持 FU-A 分片）
-            var rtpPackets = CreateRtpPackets(nalData, _sequenceNumber, _timestamp, isLastNalInFrame);
+            var rtpPackets = CreateRtpPackets(nalData, _videoSequenceNumber, _videoTimestamp, isLastNalInFrame);
             
             // 详细日志：前几个 RTP 包
             if (frameCount < 3)
@@ -441,18 +593,53 @@ public class FileMediaSource : IMediaSource
                 {
                     Data = data,
                     TrackId = 0,
-                    Timestamp = _timestamp,
+                    Timestamp = _videoTimestamp,
                     SequenceNumber = seq,
                     IsKeyFrame = isKeyFrame
                 };
-                _sequenceNumber = (ushort)(seq + 1);
+                _videoSequenceNumber = (ushort)(seq + 1);
             }
 
-            // 更新时间戳
+            // 更新视频时间戳 (90kHz 时钟)
             if (isKeyFrame || nalType == NAL_SLICE)
             {
-                _timestamp += (uint)(90000 / _config.Framerate);
+                _videoTimestamp += (uint)(90000 / _config.Framerate);
                 frameCount++;
+            }
+
+            // 发送音频包（如果有）
+            if (audioSamples.Count > 0 && audioIndex < audioSamples.Count)
+            {
+                // 计算音频时间戳
+                // 音频时间戳基于样本数和采样率
+                int audioFrameSize = _config.AudioCodec switch
+                {
+                    AudioCodecType.PCMA => 160,  // 20ms @ 8kHz
+                    AudioCodecType.PCMU => 160,
+                    AudioCodecType.AAC => 1024,
+                    _ => 160
+                };
+                
+                byte[] audioData = audioSamples[audioIndex];
+                var audioRtpPacket = CreateAudioRtpPacket(audioData, _audioSequenceNumber, _audioTimestamp);
+                
+                yield return new RtpPacket
+                {
+                    Data = audioRtpPacket,
+                    TrackId = 1,  // 音频轨道
+                    Timestamp = _audioTimestamp,
+                    SequenceNumber = _audioSequenceNumber,
+                    IsKeyFrame = false
+                };
+                
+                _audioSequenceNumber++;
+                _audioTimestamp += (uint)audioFrameSize;
+                
+                audioIndex++;
+                if (audioIndex >= audioSamples.Count && loop)
+                {
+                    audioIndex = 0;
+                }
             }
 
             nalIndex++;
@@ -460,15 +647,23 @@ public class FileMediaSource : IMediaSource
             {
                 if (loop)
                 {
+                    System.Diagnostics.Debug.WriteLine($"FileMediaSource: Looping video (frame {frameCount} completed)");
+                    
                     nalIndex = 0;
+                    audioIndex = 0;
+                    frameCount = 0;
+                    
+                    // 重置下一帧时间为当前时间，避免积压大量待发送帧
+                    nextFrameTicks = stopwatch.ElapsedTicks;
+                    
+                    // 注意：时间戳和序列号不重置，保持连续递增
+                    // 这是 RTSP/RTP 标准做法，避免播放器解码器状态混乱
                 }
                 else
+                {
+                    System.Diagnostics.Debug.WriteLine($"FileMediaSource: Video playback completed ({frameCount} frames)");
                     break;
-            }
-
-            if (isKeyFrame || nalType == NAL_SLICE)
-            {
-                await Task.Delay(1000 / _config.Framerate, ct);
+                }
             }
         }
     }
@@ -1164,6 +1359,49 @@ public class FileMediaSource : IMediaSource
         packet[9] = 0x34;
         packet[10] = 0x56;
         packet[11] = 0x78;
+    }
+
+    /// <summary>
+    /// 创建音频 RTP 包
+    /// </summary>
+    private byte[] CreateAudioRtpPacket(byte[] audioData, ushort sequenceNumber, uint timestamp)
+    {
+        int rtpHeaderSize = 12;
+        var packet = new byte[rtpHeaderSize + audioData.Length];
+        
+        // RTP header
+        packet[0] = 0x80; // V=2
+        
+        // 音频 payload type: PCMA=8, PCMU=0, AAC=97
+        byte payloadType = _config.AudioCodec switch
+        {
+            AudioCodecType.PCMA => 8,
+            AudioCodecType.PCMU => 0,
+            AudioCodecType.AAC => 97,
+            _ => 8
+        };
+        packet[1] = (byte)(payloadType & 0x7F); // M=0 for audio
+        
+        // Sequence number
+        packet[2] = (byte)(sequenceNumber >> 8);
+        packet[3] = (byte)(sequenceNumber & 0xFF);
+        
+        // Timestamp (音频时钟频率: 8kHz for PCMA/PCMU, 44.1kHz for AAC)
+        packet[4] = (byte)(timestamp >> 24);
+        packet[5] = (byte)((timestamp >> 16) & 0xFF);
+        packet[6] = (byte)((timestamp >> 8) & 0xFF);
+        packet[7] = (byte)(timestamp & 0xFF);
+        
+        // SSRC
+        packet[8] = 0x12;
+        packet[9] = 0x34;
+        packet[10] = 0x56;
+        packet[11] = 0x79;  // 音频使用不同的 SSRC
+        
+        // Audio data
+        Array.Copy(audioData, 0, packet, rtpHeaderSize, audioData.Length);
+        
+        return packet;
     }
 
     #endregion

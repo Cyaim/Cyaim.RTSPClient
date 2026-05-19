@@ -26,6 +26,7 @@ public sealed class RtspSession : IDisposable
     private RtspSessionState _state = RtspSessionState.Connected;
     private readonly Dictionary<int, RtpStream> _rtpStreams = new();
     private string _currentStreamPath = "/";  // 当前请求的流路径
+    private bool _wasPlaying;  // 是否曾经在播放状态（用于统计）
     private readonly IPAddress _clientIpAddress;
 
     public string SessionId => _sessionId;
@@ -478,6 +479,13 @@ public sealed class RtspSession : IDisposable
     {
         _state = RtspSessionState.Playing;
 
+        // 统计活跃客户端
+        if (!_wasPlaying)
+        {
+            _wasPlaying = true;
+            _streamManager.IncrementActiveClients(_currentStreamPath);
+        }
+
         // 开始发送 RTP 数据
         foreach (var stream in _rtpStreams.Values)
         {
@@ -570,10 +578,12 @@ public sealed class RtspSession : IDisposable
 
     private async Task SendRtpPacketAsync(RtpStream stream, byte[] data, CancellationToken ct)
     {
+        int bytesSent;
         if (stream.RtpSocket != null)
         {
             // UDP 模式: 直接发送原始 RTP 数据
             await stream.RtpSocket.SendAsync(data, ct);
+            bytesSent = data.Length;
         }
         else
         {
@@ -587,6 +597,13 @@ public sealed class RtspSession : IDisposable
             await _stream.WriteAsync(header, ct);
             await _stream.WriteAsync(data, ct);
             await _stream.FlushAsync(ct);
+            bytesSent = 4 + data.Length;
+        }
+
+        // 记录发送的字节数
+        if (!string.IsNullOrEmpty(_currentStreamPath))
+        {
+            _streamManager.RecordBytesSent(_currentStreamPath, bytesSent);
         }
     }
 
@@ -804,6 +821,12 @@ public sealed class RtspSession : IDisposable
     {
         _cts.Cancel();
         _cts.Dispose();
+
+        // 统计：减少活跃客户端
+        if (_wasPlaying && !string.IsNullOrEmpty(_currentStreamPath))
+        {
+            _streamManager.DecrementActiveClients(_currentStreamPath);
+        }
 
         // 清理 UDP sockets
         foreach (var rtpStream in _rtpStreams.Values)

@@ -28,6 +28,9 @@ public class RtspServerService : IDisposable
     private DateTime _startTime;
     private long _totalBytesSent;
     private long _totalConnections;
+    private long _lastBandwidthBytes;
+    private DateTime _lastBandwidthCheck = DateTime.MinValue;
+    private double _lastBandwidthMbps;
 
     /// <summary>
     /// 记录发送的字节数
@@ -90,7 +93,7 @@ public class RtspServerService : IDisposable
                 VideoCodec = config.VideoCodec.ToString(),
                 Resolution = $"{config.Width}x{config.Height}",
                 Framerate = config.Framerate,
-                Status = "Ready",
+                Status = "Stopped",  // 初始状态为停止，需要手动启动
                 ActiveClients = 0
             });
         }
@@ -259,6 +262,59 @@ public class RtspServerService : IDisposable
     }
 
     /// <summary>
+    /// 启动指定流
+    /// </summary>
+    public async Task<bool> StartStreamAsync(string path)
+    {
+        try
+        {
+            var result = await _streamManager.StartStreamAsync(path, _cts?.Token ?? CancellationToken.None);
+            if (result)
+            {
+                var stream = _streams.FirstOrDefault(s => s.Path == path);
+                if (stream != null)
+                    stream.Status = "Ready";
+
+                AddLog($"Stream started: {path}", LogLevel.Information);
+            }
+            return result;
+        }
+        catch (Exception ex)
+        {
+            AddLog($"Failed to start stream: {ex.Message}", LogLevel.Error);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 停止指定流
+    /// </summary>
+    public async Task<bool> StopStreamAsync(string path)
+    {
+        try
+        {
+            var result = await _streamManager.StopStreamAsync(path, _cts?.Token ?? CancellationToken.None);
+            if (result)
+            {
+                var stream = _streams.FirstOrDefault(s => s.Path == path);
+                if (stream != null)
+                {
+                    stream.Status = "Stopped";
+                    stream.ActiveClients = 0;
+                }
+
+                AddLog($"Stream stopped: {path}", LogLevel.Information);
+            }
+            return result;
+        }
+        catch (Exception ex)
+        {
+            AddLog($"Failed to stop stream: {ex.Message}", LogLevel.Error);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 获取服务器状态
     /// </summary>
     public ServerStatistics GetStatistics()
@@ -272,7 +328,7 @@ public class RtspServerService : IDisposable
             ActiveConnections = _clients.Count,
             ActiveStreams = _streams.Count(s => s.Status == "Streaming"),
             TotalStreams = _streams.Count,
-            TotalBytesSent = _totalBytesSent,
+            TotalBytesSent = _streamManager.TotalBytesSent,
             BandwidthMbps = CalculateBandwidth()
         };
     }
@@ -315,15 +371,46 @@ public class RtspServerService : IDisposable
             if (info != null)
             {
                 stream.ActiveClients = info.ActiveClients;
-                stream.Status = info.ActiveClients > 0 ? "Streaming" : "Ready";
+                
+                if (!info.IsRunning)
+                {
+                    stream.Status = "Stopped";
+                }
+                else if (info.ActiveClients > 0)
+                {
+                    stream.Status = "Streaming";
+                }
+                else
+                {
+                    stream.Status = "Ready";
+                }
             }
         }
     }
 
     private double CalculateBandwidth()
     {
-        // 简化的带宽计算
-        return _clients.Count * 2.5; // 假设每个客户端 2.5 Mbps
+        var now = DateTime.UtcNow;
+        var currentBytes = _streamManager.TotalBytesSent;
+
+        if (_lastBandwidthCheck == DateTime.MinValue)
+        {
+            _lastBandwidthBytes = currentBytes;
+            _lastBandwidthCheck = now;
+            return 0;
+        }
+
+        var elapsedSeconds = (now - _lastBandwidthCheck).TotalSeconds;
+        if (elapsedSeconds > 0.5)
+        {
+            var bytesDiff = currentBytes - _lastBandwidthBytes;
+            // Mbps = bytes * 8 / seconds / 1,000,000
+            _lastBandwidthMbps = Math.Max(0, (bytesDiff * 8) / elapsedSeconds / 1_000_000);
+            _lastBandwidthBytes = currentBytes;
+            _lastBandwidthCheck = now;
+        }
+
+        return _lastBandwidthMbps;
     }
 
     private void AddLog(string message, LogLevel level)
