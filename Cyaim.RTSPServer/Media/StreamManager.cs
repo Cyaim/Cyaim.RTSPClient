@@ -319,23 +319,76 @@ public class FileMediaSource : IMediaSource
             System.Diagnostics.Debug.WriteLine($"FileMediaSource: NAL[{i}] size={nal.Length}, type={nalType} (0x{nal[0]:X2})");
         }
 
+        // 分离 SPS/PPS 和视频帧数据
+        byte[]? spsData = SpsData;
+        byte[]? ppsData = PpsData;
+        var videoNalUnits = new List<byte[]>();
+        
+        foreach (var nal in nalUnits)
+        {
+            byte nalType = (byte)(nal[0] & 0x1F);
+            if (nalType != NAL_SPS && nalType != NAL_PPS)
+            {
+                videoNalUnits.Add(nal);
+            }
+        }
+        
+        System.Diagnostics.Debug.WriteLine($"FileMediaSource: Separated {videoNalUnits.Count} video NAL units, SPS={spsData?.Length ?? 0} bytes, PPS={ppsData?.Length ?? 0} bytes");
+
         int frameCount = 0;
         int nalIndex = 0;
         bool loop = _config.Loop;
 
         while (_running && !ct.IsCancellationRequested)
         {
-            byte[] nalData = nalUnits[nalIndex];
+            byte[] nalData = videoNalUnits[nalIndex];
             byte nalType = (byte)(nalData[0] & 0x1F);
 
             bool isKeyFrame = nalType == NAL_IDR;
-            bool isSpsPps = nalType == NAL_SPS || nalType == NAL_PPS;
-
+            
             // 详细日志：前几个 NAL 单元
             if (frameCount < 3)
             {
                 string nalHex = BitConverter.ToString(nalData, 0, Math.Min(32, nalData.Length));
                 System.Diagnostics.Debug.WriteLine($"NAL[{nalIndex}] type={nalType}, size={nalData.Length}, first32={nalHex}");
+            }
+
+            // 在发送 IDR 帧之前，确保 SPS/PPS 已发送
+            // 这是解决 VLC 首屏绿色遮罩问题的关键
+            if (isKeyFrame && spsData != null && ppsData != null)
+            {
+                // 每个 IDR 帧前都发送 SPS/PPS，确保解码器正确初始化
+                System.Diagnostics.Debug.WriteLine($"Sending SPS/PPS before IDR frame (frame {frameCount})");
+                
+                // SPS - 不设置 marker bit
+                var spsRtpPackets = CreateRtpPackets(spsData, _sequenceNumber, _timestamp, false);
+                foreach (var (data, seq) in spsRtpPackets)
+                {
+                    yield return new RtpPacket
+                    {
+                        Data = data,
+                        TrackId = 0,
+                        Timestamp = _timestamp,
+                        SequenceNumber = seq,
+                        IsKeyFrame = false
+                    };
+                    _sequenceNumber = (ushort)(seq + 1);
+                }
+                
+                // PPS - 不设置 marker bit
+                var ppsRtpPackets = CreateRtpPackets(ppsData, _sequenceNumber, _timestamp, false);
+                foreach (var (data, seq) in ppsRtpPackets)
+                {
+                    yield return new RtpPacket
+                    {
+                        Data = data,
+                        TrackId = 0,
+                        Timestamp = _timestamp,
+                        SequenceNumber = seq,
+                        IsKeyFrame = false
+                    };
+                    _sequenceNumber = (ushort)(seq + 1);
+                }
             }
 
             // 设置 marker bit: 只在帧的最后一个 NAL 设置
@@ -345,26 +398,27 @@ public class FileMediaSource : IMediaSource
             if (nalType == NAL_IDR || nalType == NAL_SLICE)
             {
                 // IDR 和 P-frame slice: 检查是否为当前帧的最后一个 NAL
-                if (nalIndex + 1 >= nalUnits.Count)
+                if (nalIndex + 1 >= videoNalUnits.Count)
                 {
                     isLastNalInFrame = true; // 文件末尾
                 }
                 else
                 {
-                    byte nextNalType = (byte)(nalUnits[nalIndex + 1][0] & 0x1F);
-                    // 如果下一个 NAL 是 SPS/PPS/IDR，说明当前是帧的最后一个
-                    if (nextNalType == NAL_SPS || nextNalType == NAL_PPS || nextNalType == NAL_IDR)
+                    byte nextNalType = (byte)(videoNalUnits[nalIndex + 1][0] & 0x1F);
+                    // 如果下一个 NAL 是 IDR，说明当前是帧的最后一个
+                    // 注意：连续的 P-frame slice 属于同一帧
+                    if (nextNalType == NAL_IDR || nextNalType == NAL_SPS || nextNalType == NAL_PPS)
                     {
                         isLastNalInFrame = true;
                     }
-                    else
+                    // 对于连续的 SLICE NAL，只有当后面没有更多 SLICE 时才标记为最后一帧
+                    // 简化处理：假设每个 SLICE NAL 是独立的一帧（大多数 MP4 文件如此）
+                    else if (nalType == NAL_SLICE && nextNalType == NAL_SLICE)
                     {
-                        // 下一个是 P-frame slice，当前也是帧的最后一个
-                        isLastNalInFrame = true;
+                        isLastNalInFrame = true; // 每个 P-frame 作为独立帧处理
                     }
                 }
             }
-            // SPS/PPS: isLastNalInFrame 保持 false
 
             // 创建 RTP 包（支持 FU-A 分片）
             var rtpPackets = CreateRtpPackets(nalData, _sequenceNumber, _timestamp, isLastNalInFrame);
@@ -372,7 +426,7 @@ public class FileMediaSource : IMediaSource
             // 详细日志：前几个 RTP 包
             if (frameCount < 3)
             {
-                System.Diagnostics.Debug.WriteLine($"  Created {rtpPackets.Count} RTP packets for NAL type={nalType}");
+                System.Diagnostics.Debug.WriteLine($"  Created {rtpPackets.Count} RTP packets for NAL type={nalType}, marker={isLastNalInFrame}");
                 for (int i = 0; i < Math.Min(3, rtpPackets.Count); i++)
                 {
                     var (pkt, seq) = rtpPackets[i];
@@ -402,10 +456,12 @@ public class FileMediaSource : IMediaSource
             }
 
             nalIndex++;
-            if (nalIndex >= nalUnits.Count)
+            if (nalIndex >= videoNalUnits.Count)
             {
                 if (loop)
+                {
                     nalIndex = 0;
+                }
                 else
                     break;
             }
