@@ -15,8 +15,8 @@ public class AddStreamDialog : Window
     public string Description { get; private set; } = "";
     public MediaSourceType SourceType { get; private set; } = MediaSourceType.TestPattern;
     public VideoCodecType VideoCodec { get; private set; } = VideoCodecType.H264;
-    public int Width { get; private set; } = 1920;
-    public int Height { get; private set; } = 1080;
+    public int VideoWidth { get; private set; } = 1920;
+    public int VideoHeight { get; private set; } = 1080;
     public int Framerate { get; private set; } = 25;
     public bool EnableAudio { get; private set; } = true;
     public AudioCodecType AudioCodec { get; private set; } = AudioCodecType.PCMA;
@@ -159,8 +159,8 @@ public class AddStreamDialog : Window
         Description = _descBox?.Text ?? "";
         SourceType = (MediaSourceType)(_sourceCombo?.SelectedItem ?? MediaSourceType.TestPattern);
         VideoCodec = (VideoCodecType)(_codecCombo?.SelectedItem ?? VideoCodecType.H264);
-        Width = int.TryParse(_widthBox?.Text, out var w) ? w : 1920;
-        Height = int.TryParse(_heightBox?.Text, out var h) ? h : 1080;
+        VideoWidth = int.TryParse(_widthBox?.Text, out var w) ? w : 1920;
+        VideoHeight = int.TryParse(_heightBox?.Text, out var h) ? h : 1080;
         Framerate = int.TryParse(_fpsBox?.Text, out var fps) ? fps : 25;
         EnableAudio = _audioCheck?.IsChecked ?? true;
         AudioCodec = (AudioCodecType)(_audioCodecCombo?.SelectedItem ?? AudioCodecType.PCMA);

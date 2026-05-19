@@ -3,126 +3,642 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Cyaim RTSP Server Dashboard" 
         Height="900" Width="1400"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        Background="#f5f5f5">
+    
+    <Window.Resources>
+        <!-- Colors -->
+        <Color x:Key="PrimaryColor">#2563eb</Color>
+        <Color x:Key="PrimaryDarkColor">#1d4ed8</Color>
+        <Color x:Key="SuccessColor">#16a34a</Color>
+        <Color x:Key="DangerColor">#dc2626</Color>
+        <Color x:Key="WarningColor">#f59e0b</Color>
+        <Color x:Key="TextColor">#1e293b</Color>
+        <Color x:Key="TextSecondaryColor">#64748b</Color>
+        <Color x:Key="BorderColor">#e2e8f0</Color>
+        <Color x:Key="HoverColor">#f1f5f9</Color>
+        <Color x:Key="SelectedColor">#eff6ff</Color>
+        <Color x:Key="HeaderBgColor">#f8fafc</Color>
+        
+        <SolidColorBrush x:Key="PrimaryBrush" Color="{StaticResource PrimaryColor}"/>
+        <SolidColorBrush x:Key="PrimaryDarkBrush" Color="{StaticResource PrimaryDarkColor}"/>
+        <SolidColorBrush x:Key="SuccessBrush" Color="{StaticResource SuccessColor}"/>
+        <SolidColorBrush x:Key="DangerBrush" Color="{StaticResource DangerColor}"/>
+        <SolidColorBrush x:Key="TextBrush" Color="{StaticResource TextColor}"/>
+        <SolidColorBrush x:Key="TextSecondaryBrush" Color="{StaticResource TextSecondaryColor}"/>
+        <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
+        <SolidColorBrush x:Key="HoverBrush" Color="{StaticResource HoverColor}"/>
+        <SolidColorBrush x:Key="SelectedBrush" Color="{StaticResource SelectedColor}"/>
+        <SolidColorBrush x:Key="HeaderBgBrush" Color="{StaticResource HeaderBgColor}"/>
+        
+        <!-- Card Style -->
+        <Style x:Key="CardStyle" TargetType="Border">
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="Padding" Value="20"/>
+            <Setter Property="Margin" Value="8"/>
+            <Setter Property="Effect">
+                <Setter.Value>
+                    <DropShadowEffect BlurRadius="12" ShadowDepth="1" Opacity="0.08" Color="#000"/>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+        </Style>
+        
+        <!-- Stat Label -->
+        <Style x:Key="StatLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+            <Setter Property="FontWeight" Value="Normal"/>
+        </Style>
+        
+        <!-- Stat Value -->
+        <Style x:Key="StatValue" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="32"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+        </Style>
+        
+        <!-- Primary Button -->
+        <Style x:Key="PrimaryButton" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource PrimaryBrush}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Padding" Value="16,10"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="Medium"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" 
+                                Background="{TemplateBinding Background}" 
+                                CornerRadius="8" 
+                                Padding="{TemplateBinding Padding}"
+                                BorderThickness="0">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{StaticResource PrimaryDarkBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#1e40af"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="border" Property="Background" Value="#94a3b8"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        
+        <!-- Danger Button -->
+        <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+            <Setter Property="Background" Value="{StaticResource DangerBrush}"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#b91c1c"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        
+        <!-- Success Button -->
+        <Style x:Key="SuccessButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+            <Setter Property="Background" Value="{StaticResource SuccessBrush}"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#15803d"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        
+        <!-- Ghost Button (small) -->
+        <Style x:Key="GhostButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border"
+                                Background="{TemplateBinding Background}" 
+                                CornerRadius="6" 
+                                Padding="{TemplateBinding Padding}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                BorderBrush="{TemplateBinding BorderBrush}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{StaticResource HoverBrush}"/>
+                                <Setter TargetName="border" Property="BorderBrush" Value="#cbd5e1"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        
+        <!-- Action Button (icon button with hover) -->
+        <Style x:Key="ActionButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="ToolTipService.ShowDuration" Value="3000"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border"
+                                Background="{TemplateBinding Background}" 
+                                CornerRadius="6" 
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{StaticResource HoverBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        
+        <!-- Success Action Button -->
+        <Style x:Key="SuccessActionButton" TargetType="Button" BasedOn="{StaticResource ActionButton}">
+            <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#dcfce7"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        
+        <!-- Danger Action Button -->
+        <Style x:Key="DangerActionButton" TargetType="Button" BasedOn="{StaticResource ActionButton}">
+            <Setter Property="Foreground" Value="{StaticResource DangerBrush}"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#fee2e2"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        
+        <!-- DataGrid Style -->
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="RowBackground" Value="Transparent"/>
+            <Setter Property="AlternatingRowBackground" Value="#fafbfc"/>
+            <Setter Property="GridLinesVisibility" Value="None"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="VerticalGridLinesBrush" Value="Transparent"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="SelectionMode" Value="Single"/>
+            <Setter Property="CanUserResizeRows" Value="False"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="SelectionMode" Value="Single"/>
+            <Setter Property="SelectionUnit" Value="FullRow"/>
+        </Style>
+        
+        <!-- DataGrid Header Style -->
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="{StaticResource HeaderBgBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Padding" Value="12,10"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        </Style>
+        
+        <!-- DataGrid Row Style -->
+        <Style TargetType="DataGridRow">
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0,2"/>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{StaticResource SelectedBrush}"/>
+                    <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                </Trigger>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{StaticResource HoverBrush}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        
+        <!-- DataGrid Cell Style -->
+        <Style TargetType="DataGridCell">
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="12,8"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="Transparent"/>
+                    <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        
+        <!-- ListBox Style -->
+        <Style TargetType="ListBox">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+        </Style>
+        
+        <!-- ListBox Item Style -->
+        <Style TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="14,12"/>
+            <Setter Property="Margin" Value="0,2"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="border"
+                                Background="Transparent"
+                                CornerRadius="8"
+                                Padding="{TemplateBinding Padding}"
+                                Margin="4,2">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{StaticResource HoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{StaticResource SelectedBrush}"/>
+                                <Setter TargetName="border" Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                                <Setter TargetName="border" Property="BorderThickness" Value="1"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        
+        <!-- TextBox Style -->
+        <Style TargetType="TextBox">
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Style.Triggers>
+                <Trigger Property="IsFocused" Value="True">
+                    <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        
+        <!-- PasswordBox Style -->
+        <Style TargetType="PasswordBox">
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Style.Triggers>
+                <Trigger Property="IsFocused" Value="True">
+                    <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        
+        <!-- CheckBox Style -->
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+        
+        <!-- TabItem Style -->
+        <Style TargetType="TabItem">
+            <Setter Property="Padding" Value="16,10"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="border"
+                                Background="Transparent"
+                                Padding="{TemplateBinding Padding}"
+                                BorderThickness="0,0,0,2"
+                                BorderBrush="Transparent"
+                                Margin="0,0,4,0">
+                            <ContentPresenter x:Name="content" ContentSource="Header"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="content" Property="TextElement.Foreground" Value="{StaticResource TextBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="content" Property="TextElement.Foreground" Value="{StaticResource PrimaryBrush}"/>
+                                <Setter TargetName="border" Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        
+        <!-- TabControl Style -->
+        <Style TargetType="TabControl">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+        </Style>
+        
+        <!-- ScrollBar Style -->
+        <Style TargetType="ScrollBar">
+            <Setter Property="Width" Value="8"/>
+            <Setter Property="Background" Value="Transparent"/>
+        </Style>
+        
+        <!-- Status Badge Style -->
+        <Style x:Key="StatusBadge" TargetType="Border">
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="Padding" Value="10,4"/>
+            <Setter Property="Background" Value="#f1f5f9"/>
+        </Style>
+        
+    </Window.Resources>
     
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="60"/>
+            <RowDefinition Height="64"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
         
         <!-- Header -->
-        <Border Grid.Row="0" Background="#1a73e8" Padding="16,0">
-            <Grid>
+        <Border Grid.Row="0" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1">
+            <Grid Margin="24,0">
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="📡" FontSize="24" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                    <TextBlock Text="Cyaim RTSP Server" 
-                               FontSize="20" FontWeight="Bold" 
-                               Foreground="White" VerticalAlignment="Center"/>
+                    <Border Background="{StaticResource PrimaryBrush}" CornerRadius="10" Padding="8" Margin="0,0,14,0">
+                        <TextBlock Text="📡" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="Cyaim RTSP Server" 
+                                   FontSize="16" FontWeight="SemiBold" 
+                                   Foreground="{StaticResource TextBrush}"/>
+                        <TextBlock Text="Streaming Media Server" 
+                                   FontSize="11" 
+                                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,-2,0,0"/>
+                    </StackPanel>
                 </StackPanel>
                 
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                    <TextBlock x:Name="StatusText" Text="● Running" 
-                               Foreground="#4caf50" FontSize="14" 
-                               VerticalAlignment="Center" Margin="0,0,16,0"/>
-                    <Button Content="⚙ Settings" Style="{StaticResource PrimaryButton}" 
+                    <Border x:Name="StatusBadge" Style="{StaticResource StatusBadge}" Margin="0,0,16,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse x:Name="StatusDot" Width="8" Height="8" Fill="{StaticResource DangerBrush}" Margin="0,0,8,0"/>
+                            <TextBlock x:Name="StatusText" Text="Stopped" 
+                                       FontSize="13" FontWeight="Medium"
+                                       Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+                    
+                    <Button Content="⚙ Settings" Style="{StaticResource GhostButton}" 
                             Click="OnSettingsClick" Margin="0,0,8,0"/>
-                    <Button x:Name="StartStopButton" Content="⏹ Stop" 
-                            Style="{StaticResource DangerButton}" 
-                            Click="OnStartStopClick"/>
+                    <Button x:Name="RestartButton" Content="↻ Restart" 
+                            Style="{StaticResource GhostButton}" 
+                            Click="OnRestartClick" Margin="0,0,8,0" Visibility="Collapsed"/>
+                    <Button x:Name="StartStopButton" Content="▶  Start Server" 
+                            Style="{StaticResource SuccessButton}" 
+                            Click="OnStartStopClick" Padding="20,10"/>
                 </StackPanel>
             </Grid>
         </Border>
         
         <!-- Main Content -->
-        <TabControl Grid.Row="1" Margin="16">
+        <TabControl x:Name="MainTabControl" Grid.Row="1" Margin="16,12">
             
             <!-- Dashboard Tab -->
             <TabItem Header="📊 Dashboard">
-                <Grid>
+                <Grid Margin="0,8">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="120"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
                     
                     <!-- Stats Cards -->
-                    <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Center">
-                        <Border Style="{StaticResource CardStyle}" Width="200">
+                    <Grid Grid.Row="0" Margin="0,0,0,16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <Border Grid.Column="0" Style="{StaticResource CardStyle}">
                             <StackPanel>
-                                <TextBlock Text="Active Streams" Style="{StaticResource StatLabel}"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                    <Border Background="#eff6ff" CornerRadius="8" Padding="8" Margin="0,0,12,0">
+                                        <TextBlock Text="📡" FontSize="16"/>
+                                    </Border>
+                                    <TextBlock Text="Active Streams" Style="{StaticResource StatLabel}" VerticalAlignment="Center"/>
+                                </StackPanel>
                                 <TextBlock x:Name="ActiveStreamsCount" Text="0" Style="{StaticResource StatValue}"/>
                             </StackPanel>
                         </Border>
                         
-                        <Border Style="{StaticResource CardStyle}" Width="200">
+                        <Border Grid.Column="1" Style="{StaticResource CardStyle}">
                             <StackPanel>
-                                <TextBlock Text="Connected Clients" Style="{StaticResource StatLabel}"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                    <Border Background="#f0fdf4" CornerRadius="8" Padding="8" Margin="0,0,12,0">
+                                        <TextBlock Text="👥" FontSize="16"/>
+                                    </Border>
+                                    <TextBlock Text="Connected Clients" Style="{StaticResource StatLabel}" VerticalAlignment="Center"/>
+                                </StackPanel>
                                 <TextBlock x:Name="ConnectedClientsCount" Text="0" Style="{StaticResource StatValue}"/>
                             </StackPanel>
                         </Border>
                         
-                        <Border Style="{StaticResource CardStyle}" Width="200">
+                        <Border Grid.Column="2" Style="{StaticResource CardStyle}">
                             <StackPanel>
-                                <TextBlock Text="Total Bandwidth" Style="{StaticResource StatLabel}"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                    <Border Background="#fef3c7" CornerRadius="8" Padding="8" Margin="0,0,12,0">
+                                        <TextBlock Text="📊" FontSize="16"/>
+                                    </Border>
+                                    <TextBlock Text="Bandwidth" Style="{StaticResource StatLabel}" VerticalAlignment="Center"/>
+                                </StackPanel>
                                 <TextBlock x:Name="BandwidthText" Text="0 Mbps" Style="{StaticResource StatValue}"/>
                             </StackPanel>
                         </Border>
                         
-                        <Border Style="{StaticResource CardStyle}" Width="200">
+                        <Border Grid.Column="3" Style="{StaticResource CardStyle}">
                             <StackPanel>
-                                <TextBlock Text="Uptime" Style="{StaticResource StatLabel}"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                    <Border Background="#fce7f3" CornerRadius="8" Padding="8" Margin="0,0,12,0">
+                                        <TextBlock Text="⏱" FontSize="16"/>
+                                    </Border>
+                                    <TextBlock Text="Uptime" Style="{StaticResource StatLabel}" VerticalAlignment="Center"/>
+                                </StackPanel>
                                 <TextBlock x:Name="UptimeText" Text="00:00:00" Style="{StaticResource StatValue}"/>
                             </StackPanel>
                         </Border>
-                    </StackPanel>
+                    </Grid>
                     
                     <!-- Streams List -->
-                    <DataGrid Grid.Row="1" x:Name="StreamsGrid" 
-                              AutoGenerateColumns="False" 
-                              IsReadOnly="True"
-                              Margin="0,16,0,0">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="Path" Binding="{Binding Path}" Width="200"/>
-                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="150"/>
-                            <DataGridTextColumn Header="Codec" Binding="{Binding VideoCodec}" Width="100"/>
-                            <DataGridTextColumn Header="Resolution" Binding="{Binding Resolution}" Width="120"/>
-                            <DataGridTextColumn Header="Clients" Binding="{Binding ActiveClients}" Width="80"/>
-                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="100"/>
-                            <DataGridTemplateColumn Header="Actions" Width="200">
-                                <DataGridTemplateColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <StackPanel Orientation="Horizontal">
-                                            <Button Content="▶" Margin="4,0" Padding="8,4"/>
-                                            <Button Content="⏹" Margin="4,0" Padding="8,4"/>
-                                            <Button Content="🗑" Margin="4,0" Padding="8,4"/>
-                                        </StackPanel>
-                                    </DataTemplate>
-                                </DataGridTemplateColumn.CellTemplate>
-                            </DataGridTemplateColumn>
-                        </DataGrid.Columns>
-                    </DataGrid>
+                    <Border Grid.Row="1" Style="{StaticResource CardStyle}">
+                        <DockPanel>
+                            <StackPanel DockPanel.Dock="Top" Margin="0,0,0,16">
+                                <TextBlock Text="Streams" FontSize="18" FontWeight="SemiBold" 
+                                          Foreground="{StaticResource TextBrush}"/>
+                            </StackPanel>
+                            
+                            <DataGrid x:Name="StreamsGrid" SelectionChanged="OnStreamSelected">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="PATH" Binding="{Binding Path}" Width="200"/>
+                                    <DataGridTextColumn Header="NAME" Binding="{Binding Name}" Width="150"/>
+                                    <DataGridTextColumn Header="CODEC" Binding="{Binding VideoCodec}" Width="100"/>
+                                    <DataGridTextColumn Header="RESOLUTION" Binding="{Binding Resolution}" Width="120"/>
+                                    <DataGridTextColumn Header="FPS" Binding="{Binding Framerate}" Width="60"/>
+                                    <DataGridTextColumn Header="CLIENTS" Binding="{Binding ActiveClients}" Width="80"/>
+                                    <DataGridTemplateColumn Header="STATUS" Width="120">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Border CornerRadius="12" Padding="10,4" 
+                                                        HorizontalAlignment="Left">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Background" Value="#f1f5f9"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding Status}" Value="Streaming">
+                                                                    <Setter Property="Background" Value="#dcfce7"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding Status}" Value="Ready">
+                                                                    <Setter Property="Background" Value="#fef3c7"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <TextBlock Text="{Binding Status}" FontSize="12" FontWeight="Medium">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Foreground" Value="#64748b"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding Status}" Value="Streaming">
+                                                                        <Setter Property="Foreground" Value="#16a34a"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding Status}" Value="Ready">
+                                                                        <Setter Property="Foreground" Value="#d97706"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </Border>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="ACTIONS" Width="140">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Button Content="▶" Margin="0,0,4,0" Padding="8,4" 
+                                                            Style="{StaticResource SuccessActionButton}"
+                                                            Tag="{Binding Path}" Click="OnStartStream"
+                                                            ToolTip="Start Stream"/>
+                                                    <Button Content="⏹" Margin="0,0,4,0" Padding="8,4" 
+                                                            Style="{StaticResource ActionButton}"
+                                                            Tag="{Binding Path}" Click="OnStopStream"
+                                                            ToolTip="Stop Stream"/>
+                                                    <Button Content="✕" Padding="8,4" 
+                                                            Style="{StaticResource DangerActionButton}"
+                                                            Tag="{Binding Path}" Click="OnRemoveStream"
+                                                            ToolTip="Remove Stream"/>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                    </Border>
                 </Grid>
             </TabItem>
             
             <!-- Streams Tab -->
             <TabItem Header="📺 Streams">
-                <Grid>
+                <Grid Margin="0,8">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="300"/>
+                        <ColumnDefinition Width="280"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
                     
                     <!-- Stream List -->
                     <Border Grid.Column="0" Style="{StaticResource CardStyle}">
                         <DockPanel>
-                            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,12">
-                                <TextBlock Text="Streams" FontSize="16" FontWeight="Bold" 
-                                          VerticalAlignment="Center"/>
-                                <Button Content="+" Style="{StaticResource PrimaryButton}" 
-                                        Click="OnAddStream" Margin="8,0,0,0" Padding="12,4"/>
+                            <StackPanel DockPanel.Dock="Top" Margin="0,0,0,16">
+                                <Grid>
+                                    <TextBlock Text="Streams" FontSize="16" FontWeight="SemiBold" 
+                                              VerticalAlignment="Center"
+                                              Foreground="{StaticResource TextBrush}"/>
+                                    <Button Content="+ Add" Style="{StaticResource PrimaryButton}" 
+                                            Click="OnAddStream" Padding="12,6" HorizontalAlignment="Right"/>
+                                </Grid>
                             </StackPanel>
                             
-                            <ListBox x:Name="StreamList" SelectionChanged="OnStreamSelected"/>
+                            <ListBox x:Name="StreamList" SelectionChanged="OnStreamSelected">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" 
+                                                          FontSize="14" Foreground="{StaticResource TextBrush}"/>
+                                                <TextBlock Text="{Binding Path}" FontSize="11" 
+                                                          Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                            <Border Grid.Column="1" CornerRadius="10" Padding="8,3"
+                                                    VerticalAlignment="Center">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="#f1f5f9"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding Status}" Value="Streaming">
+                                                                <Setter Property="Background" Value="#dcfce7"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <TextBlock Text="{Binding Status}" FontSize="10" FontWeight="Medium">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="#64748b"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding Status}" Value="Streaming">
+                                                                    <Setter Property="Foreground" Value="#16a34a"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </Border>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
                         </DockPanel>
                     </Border>
                     
@@ -130,75 +646,169 @@
                     <Border Grid.Column="1" Style="{StaticResource CardStyle}" Margin="8,8,0,8">
                         <ScrollViewer>
                             <StackPanel x:Name="StreamDetailsPanel">
-                                <TextBlock Text="Select a stream to view details" 
-                                          Foreground="#999" FontStyle="Italic"/>
+                                <Border Background="#f8fafc" CornerRadius="8" Padding="24">
+                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                        <TextBlock Text="📺" FontSize="32" HorizontalAlignment="Center" Margin="0,0,0,12"/>
+                                        <TextBlock Text="Select a stream" FontSize="16" FontWeight="SemiBold"
+                                                  HorizontalAlignment="Center" Foreground="{StaticResource TextBrush}"/>
+                                        <TextBlock Text="Choose a stream from the list to view details and manage it"
+                                                  FontSize="13" HorizontalAlignment="Center" 
+                                                  Foreground="{StaticResource TextSecondaryBrush}" Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </Border>
                             </StackPanel>
                         </ScrollViewer>
                     </Border>
                 </Grid>
             </TabItem>
             
+            <!-- Clients Tab -->
+            <TabItem Header="👥 Clients">
+                <Border Style="{StaticResource CardStyle}" Margin="0,8">
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,16">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Connected Clients" FontSize="18" FontWeight="SemiBold" 
+                                          VerticalAlignment="Center" Foreground="{StaticResource TextBrush}"/>
+                                <Border Background="#eff6ff" CornerRadius="12" Padding="10,3" Margin="10,0,0,0">
+                                    <TextBlock x:Name="ClientCountText" Text="0" FontSize="13" FontWeight="SemiBold"
+                                              Foreground="{StaticResource PrimaryBrush}"/>
+                                </Border>
+                            </StackPanel>
+                        </StackPanel>
+                        
+                        <DataGrid x:Name="ClientsGrid">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="ENDPOINT" Binding="{Binding Endpoint}" Width="200"/>
+                                <DataGridTextColumn Header="CONNECTED AT" Binding="{Binding ConnectedAt, StringFormat='HH:mm:ss'}" Width="150"/>
+                                <DataGridTemplateColumn Header="STATUS" Width="120">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Border CornerRadius="12" Padding="10,4" HorizontalAlignment="Left"
+                                                    Background="#dcfce7">
+                                                <TextBlock Text="{Binding Status}" FontSize="12" FontWeight="Medium"
+                                                          Foreground="#16a34a"/>
+                                            </Border>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTextColumn Header="BYTES SENT" Binding="{Binding BytesSent, StringFormat='N0'}" Width="120"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </Border>
+            </TabItem>
+            
             <!-- Logs Tab -->
             <TabItem Header="📋 Logs">
-                <Border Style="{StaticResource CardStyle}">
+                <Border Style="{StaticResource CardStyle}" Margin="0,8">
                     <DockPanel>
-                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,12">
-                            <Button Content="Clear" Style="{StaticResource PrimaryButton}" 
-                                    Click="OnClearLogs" Padding="12,4"/>
-                            <CheckBox Content="Auto-scroll" IsChecked="True" 
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,16">
+                            <Button Content="Clear Logs" Style="{StaticResource GhostButton}" 
+                                    Click="OnClearLogs" Padding="12,6"/>
+                            <CheckBox x:Name="AutoScrollCheckBox" Content="Auto-scroll" IsChecked="True" 
                                      VerticalAlignment="Center" Margin="16,0"/>
                         </StackPanel>
                         
-                        <TextBox x:Name="LogsTextBox" 
-                                 IsReadOnly="True" 
-                                 TextWrapping="Wrap"
-                                 VerticalScrollBarVisibility="Auto"
-                                 FontFamily="Consolas"
-                                 FontSize="12"
-                                 Background="#1e1e1e"
-                                 Foreground="#d4d4d4"/>
+                        <Border Background="#1e1e1e" CornerRadius="8" Padding="12">
+                            <TextBox x:Name="LogsTextBox" 
+                                     IsReadOnly="True" 
+                                     TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     FontFamily="Cascadia Code, Consolas, Courier New"
+                                     FontSize="12"
+                                     Background="Transparent"
+                                     Foreground="#d4d4d4"
+                                     BorderThickness="0"/>
+                        </Border>
                     </DockPanel>
                 </Border>
             </TabItem>
             
             <!-- Settings Tab -->
             <TabItem Header="⚙ Settings">
-                <Border Style="{StaticResource CardStyle}">
+                <Border Style="{StaticResource CardStyle}" Margin="0,8">
                     <ScrollViewer>
                         <StackPanel MaxWidth="600">
-                            <TextBlock Text="Server Settings" FontSize="18" FontWeight="Bold" Margin="0,0,0,16"/>
+                            <TextBlock Text="Server Settings" FontSize="20" FontWeight="SemiBold" 
+                                      Margin="0,0,0,24" Foreground="{StaticResource TextBrush}"/>
                             
-                            <Grid>
+                            <!-- Host & Port -->
+                            <TextBlock Text="Network" FontSize="14" FontWeight="SemiBold" 
+                                      Foreground="{StaticResource TextBrush}" Margin="0,0,0,12"/>
+                            <Grid Margin="0,0,0,20">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="150"/>
                                     <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="100"/>
+                                    <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                </Grid.RowDefinitions>
                                 
-                                <TextBlock Grid.Row="0" Grid.Column="0" Text="Host:" VerticalAlignment="Center"/>
-                                <TextBox Grid.Row="0" Grid.Column="1" x:Name="HostTextBox" Text="0.0.0.0" Margin="0,4"/>
+                                <TextBlock Grid.Column="0" Text="Host" VerticalAlignment="Center"
+                                          Foreground="{StaticResource TextSecondaryBrush}"/>
+                                <TextBox Grid.Column="1" x:Name="HostTextBox" Text="0.0.0.0" Margin="0,0,16,0"/>
                                 
-                                <TextBlock Grid.Row="1" Grid.Column="0" Text="Port:" VerticalAlignment="Center"/>
-                                <TextBox Grid.Row="1" Grid.Column="1" x:Name="PortTextBox" Text="554" Margin="0,4"/>
-                                
-                                <TextBlock Grid.Row="2" Grid.Column="0" Text="Max Connections:" VerticalAlignment="Center"/>
-                                <TextBox Grid.Row="2" Grid.Column="1" x:Name="MaxConnectionsTextBox" Text="10000" Margin="0,4"/>
-                                
-                                <TextBlock Grid.Row="3" Grid.Column="0" Text="Session Timeout:" VerticalAlignment="Center"/>
-                                <TextBox Grid.Row="3" Grid.Column="1" x:Name="TimeoutTextBox" Text="60" Margin="0,4"/>
-                                
-                                <CheckBox Grid.Row="4" Grid.Column="1" x:Name="EnableAuthCheckBox" 
-                                          Content="Enable Authentication" Margin="0,8"/>
+                                <TextBlock Grid.Column="2" Text="Port" VerticalAlignment="Center"
+                                          Foreground="{StaticResource TextSecondaryBrush}"/>
+                                <TextBox Grid.Column="3" x:Name="PortTextBox" Text="554"/>
                             </Grid>
                             
-                            <Button Content="Save Settings" Style="{StaticResource PrimaryButton}" 
-                                    Click="OnSaveSettings" Margin="0,24,0,0"/>
+                            <!-- Connections -->
+                            <TextBlock Text="Connection Limits" FontSize="14" FontWeight="SemiBold" 
+                                      Foreground="{StaticResource TextBrush}" Margin="0,0,0,12"/>
+                            <Grid Margin="0,0,0,20">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="150"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="100"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                
+                                <TextBlock Grid.Column="0" Text="Max Connections" VerticalAlignment="Center"
+                                          Foreground="{StaticResource TextSecondaryBrush}"/>
+                                <TextBox Grid.Column="1" x:Name="MaxConnectionsTextBox" Text="10000" Margin="0,0,16,0"/>
+                                
+                                <TextBlock Grid.Column="2" Text="Timeout (s)" VerticalAlignment="Center"
+                                          Foreground="{StaticResource TextSecondaryBrush}"/>
+                                <TextBox Grid.Column="3" x:Name="TimeoutTextBox" Text="60"/>
+                            </Grid>
+                            
+                            <!-- Authentication -->
+                            <TextBlock Text="Authentication" FontSize="14" FontWeight="SemiBold" 
+                                      Foreground="{StaticResource TextBrush}" Margin="0,0,0,12"/>
+                            <Border Background="#f8fafc" CornerRadius="8" Padding="16" Margin="0,0,0,20">
+                                <StackPanel>
+                                    <CheckBox x:Name="EnableAuthCheckBox" 
+                                              Content="Enable Digest Authentication" 
+                                              Margin="0,0,0,12"
+                                              Foreground="{StaticResource TextBrush}"/>
+                                    
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="150"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Username" 
+                                                  VerticalAlignment="Center" Margin="0,0,0,8"
+                                                  Foreground="{StaticResource TextSecondaryBrush}"/>
+                                        <TextBox Grid.Row="0" Grid.Column="1" x:Name="UsernameTextBox" 
+                                                Text="admin" Margin="0,0,0,8"/>
+                                        
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Password" 
+                                                  VerticalAlignment="Center"
+                                                  Foreground="{StaticResource TextSecondaryBrush}"/>
+                                        <PasswordBox Grid.Row="1" Grid.Column="1" x:Name="PasswordBox"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                            
+                            <Button Content="💾  Save Settings" Style="{StaticResource PrimaryButton}" 
+                                    Click="OnSaveSettings" Margin="0,8,0,0" Padding="24,12"/>
                         </StackPanel>
                     </ScrollViewer>
                 </Border>

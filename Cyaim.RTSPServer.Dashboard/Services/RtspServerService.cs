@@ -18,6 +18,7 @@ public class RtspServerService : IDisposable
     private readonly RtspServerOptions _options;
     private readonly StreamManager _streamManager;
     private readonly RtspProtocolHandler _protocolHandler;
+    private readonly RtspLogCapture _logCapture;
     private CancellationTokenSource? _cts;
     private Task? _serverTask;
     private readonly object _lock = new();
@@ -27,6 +28,14 @@ public class RtspServerService : IDisposable
     private DateTime _startTime;
     private long _totalBytesSent;
     private long _totalConnections;
+
+    /// <summary>
+    /// 记录发送的字节数
+    /// </summary>
+    public void RecordBytesSent(long bytes)
+    {
+        Interlocked.Add(ref _totalBytesSent, bytes);
+    }
 
     public event EventHandler<ServerStatusEventArgs>? StatusChanged;
     public event EventHandler<LogEntry>? LogReceived;
@@ -40,11 +49,28 @@ public class RtspServerService : IDisposable
     {
         _logger = logger;
         _options = options.Value;
+        
+        // 创建日志捕获器
+        _logCapture = new RtspLogCapture();
+        _logCapture.LogReceived += (sender, log) =>
+        {
+            _logs.Add(log);
+            LogReceived?.Invoke(this, log);
+        };
+
+        // 使用自定义 LoggerFactory 来捕获 RTSP 协议日志
+        var loggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder.AddConsole();
+            builder.AddProvider(new RtspLogCaptureProvider(_logCapture));
+            builder.SetMinimumLevel(LogLevel.Debug);
+        });
+
         _streamManager = new StreamManager(
-            LoggerFactory.Create(b => b.AddConsole()).CreateLogger<StreamManager>(),
+            loggerFactory.CreateLogger<StreamManager>(),
             options);
         _protocolHandler = new RtspProtocolHandler(
-            LoggerFactory.Create(b => b.AddConsole()).CreateLogger<RtspProtocolHandler>(),
+            loggerFactory.CreateLogger<RtspProtocolHandler>(),
             options, _streamManager);
 
         // 加载配置的流
@@ -312,7 +338,7 @@ public class RtspServerService : IDisposable
         _logs.Add(entry);
 
         // 限制日志数量
-        while (_logs.Count > 1000)
+        while (_logs.Count > 5000)
             _logs.RemoveAt(0);
 
         LogReceived?.Invoke(this, entry);
@@ -325,8 +351,85 @@ public class RtspServerService : IDisposable
         _cts?.Dispose();
         _protocolHandler?.Dispose();
         _streamManager?.Dispose();
+        _logCapture?.Dispose();
     }
 }
+
+#region RTSP 日志捕获
+
+/// <summary>
+/// RTSP 日志捕获器
+/// </summary>
+public class RtspLogCapture : IDisposable
+{
+    public event EventHandler<LogEntry>? LogReceived;
+
+    public void Capture(string message, LogLevel level)
+    {
+        var entry = new LogEntry
+        {
+            Timestamp = DateTime.Now,
+            Level = level,
+            Message = message
+        };
+        LogReceived?.Invoke(this, entry);
+    }
+
+    public void Dispose() { }
+}
+
+/// <summary>
+/// RTSP 日志捕获 Provider
+/// </summary>
+public class RtspLogCaptureProvider : ILoggerProvider
+{
+    private readonly RtspLogCapture _capture;
+
+    public RtspLogCaptureProvider(RtspLogCapture capture)
+    {
+        _capture = capture;
+    }
+
+    public ILogger CreateLogger(string categoryName)
+    {
+        return new RtspLogCaptureLogger(_capture, categoryName);
+    }
+
+    public void Dispose() { }
+}
+
+/// <summary>
+/// RTSP 日志捕获 Logger
+/// </summary>
+public class RtspLogCaptureLogger : ILogger
+{
+    private readonly RtspLogCapture _capture;
+    private readonly string _categoryName;
+
+    public RtspLogCaptureLogger(RtspLogCapture capture, string categoryName)
+    {
+        _capture = capture;
+        _categoryName = categoryName;
+    }
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+    {
+        var message = formatter(state, exception);
+        
+        // 只捕获 RTSP 协议相关的日志
+        if (_categoryName.Contains("Protocol") || _categoryName.Contains("Rtsp") || 
+            message.Contains("CLIENT REQUEST") || message.Contains("SERVER RESPONSE"))
+        {
+            _capture.Capture(message, logLevel);
+        }
+    }
+}
+
+#endregion
 
 #region View Models
 
