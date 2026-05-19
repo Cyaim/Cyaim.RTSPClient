@@ -12,6 +12,9 @@
     <Version>2.0.0</Version>
     <Description>WPF Dashboard for Cyaim.RTSPServer management</Description>
     <Copyright>Cyaim Studio</Copyright>
+    
+    <!-- DPI 感知配置 -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
 
   <ItemGroup>

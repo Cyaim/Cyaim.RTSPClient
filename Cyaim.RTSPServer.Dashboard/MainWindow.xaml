@@ -4,7 +4,11 @@
         Title="Cyaim RTSP Server Dashboard" 
         Height="900" Width="1400"
         WindowStartupLocation="CenterScreen"
-        Background="#f5f5f5">
+        Background="#f5f5f5"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Display"
+        TextOptions.TextRenderingMode="ClearType">
     
     <Window.Resources>
         <!-- Colors -->
@@ -548,23 +552,36 @@
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
-                                    <DataGridTemplateColumn Header="ACTIONS" Width="140">
+                                    <DataGridTemplateColumn Header="ACTIONS" Width="180">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
-                                                <StackPanel Orientation="Horizontal">
-                                                    <Button Content="▶" Margin="0,0,4,0" Padding="8,4" 
+                                                <StackPanel Orientation="Horizontal"
+                                                            IsEnabled="{Binding DataContext.IsServerRunning, RelativeSource={RelativeSource AncestorType=Window}}">
+                                                    <Button x:Name="StartBtn" Content="▶" Margin="0,0,4,0" Padding="8,4" 
                                                             Style="{StaticResource SuccessActionButton}"
                                                             Tag="{Binding Path}" Click="OnStartStream"
                                                             ToolTip="Start Stream"/>
-                                                    <Button Content="⏹" Margin="0,0,4,0" Padding="8,4" 
+                                                    <Button x:Name="StopBtn" Content="⏹" Margin="0,0,4,0" Padding="8,4" 
                                                             Style="{StaticResource ActionButton}"
                                                             Tag="{Binding Path}" Click="OnStopStream"
                                                             ToolTip="Stop Stream"/>
+                                                    <Button Content="✎" Margin="0,0,4,0" Padding="8,4" 
+                                                            Style="{StaticResource ActionButton}"
+                                                            Tag="{Binding Path}" Click="OnEditStream"
+                                                            ToolTip="Edit Stream"/>
                                                     <Button Content="✕" Padding="8,4" 
                                                             Style="{StaticResource DangerActionButton}"
                                                             Tag="{Binding Path}" Click="OnRemoveStream"
                                                             ToolTip="Remove Stream"/>
                                                 </StackPanel>
+                                                <DataTemplate.Triggers>
+                                                    <DataTrigger Binding="{Binding Status}" Value="Streaming">
+                                                        <Setter TargetName="StartBtn" Property="IsEnabled" Value="False"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding Status}" Value="Ready">
+                                                        <Setter TargetName="StopBtn" Property="IsEnabled" Value="False"/>
+                                                    </DataTrigger>
+                                                </DataTemplate.Triggers>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>

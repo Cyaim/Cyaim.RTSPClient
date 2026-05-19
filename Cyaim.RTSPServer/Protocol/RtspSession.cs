@@ -674,6 +674,14 @@ public sealed class RtspSession : IDisposable
             sb.Append($"a=rtpmap:{payloadType} {codecName}/{streamInfo.ClockRate}").Append(CRLF);
             sb.Append("a=control:trackID=0").Append(CRLF);
             sb.Append("a=sendonly").Append(CRLF);
+            
+            // 添加 sprop-parameter-sets（SPS/PPS base64 编码）
+            if (streamInfo.SpsData != null && streamInfo.PpsData != null)
+            {
+                string spsBase64 = Convert.ToBase64String(streamInfo.SpsData);
+                string ppsBase64 = Convert.ToBase64String(streamInfo.PpsData);
+                sb.Append($"a=fmtp:{payloadType} packetization-mode=1;sprop-parameter-sets={spsBase64},{ppsBase64}").Append(CRLF);
+            }
         }
 
         // 音频媒体

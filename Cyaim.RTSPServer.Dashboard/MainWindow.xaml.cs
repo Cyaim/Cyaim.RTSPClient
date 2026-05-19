@@ -17,9 +17,17 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<ClientViewModel> _clients = new();
     private readonly ObservableCollection<LogEntry> _logs = new();
 
+    /// <summary>
+    /// 服务器是否正在运行（用于绑定）
+    /// </summary>
+    public bool IsServerRunning { get; private set; }
+
     public MainWindow()
     {
         InitializeComponent();
+        
+        // 设置 DataContext 以便绑定
+        DataContext = this;
 
         // 获取服务
         _serverService = App.GetService<RtspServerService>() 
@@ -94,6 +102,8 @@ public partial class MainWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
+            IsServerRunning = e.IsRunning;
+            
             if (e.IsRunning)
             {
                 StatusText.Text = "Running";
@@ -114,6 +124,9 @@ public partial class MainWindow : Window
                 StartStopButton.Style = (Style)FindResource("SuccessButton");
                 RestartButton.Visibility = Visibility.Collapsed;
             }
+            
+            // 强制刷新 DataGrid 以更新按钮状态
+            StreamsGrid.Items.Refresh();
         });
     }
 
@@ -131,6 +144,7 @@ public partial class MainWindow : Window
                 Path = dialog.StreamPath,
                 Name = dialog.StreamName,
                 Description = dialog.Description,
+                Source = dialog.SourceUrl ?? "",  // 修复：设置 Source 属性
                 SourceType = dialog.SourceType,
                 VideoCodec = dialog.VideoCodec,
                 Width = dialog.VideoWidth,
@@ -185,6 +199,27 @@ public partial class MainWindow : Window
             Log($"Stopping stream: {path}");
             // TODO: 实现流停止
             await Task.CompletedTask;
+        }
+    }
+
+    private void OnEditStream(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button button && button.Tag is string path)
+        {
+            var stream = _streams.FirstOrDefault(s => s.Path == path);
+            if (stream == null) return;
+
+            var dialog = new AddStreamDialog();
+            dialog.SetEditMode(stream);
+            
+            if (dialog.ShowDialog() == true)
+            {
+                // 更新流配置（目前只更新UI，实际需要实现更新逻辑）
+                stream.Name = dialog.StreamName;
+                stream.Description = dialog.Description;
+                RefreshStreams();
+                Log($"Stream updated: {path}");
+            }
         }
     }
 

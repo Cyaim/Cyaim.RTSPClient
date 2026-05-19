@@ -4,9 +4,34 @@
              StartupUri="MainWindow.xaml">
     <Application.Resources>
         <ResourceDictionary>
+            <!-- 全局渲染选项 - 改善高 DPI 显示 -->
+            <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
+            
+            <!-- 文本渲染优化 -->
+            <Style TargetType="TextBlock">
+                <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
+                <Setter Property="TextOptions.TextRenderingMode" Value="ClearType"/>
+                <Setter Property="TextOptions.TextHintingMode" Value="Fixed"/>
+            </Style>
+            
+            <Style TargetType="TextBox">
+                <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
+                <Setter Property="TextOptions.TextRenderingMode" Value="ClearType"/>
+                <Setter Property="TextOptions.TextHintingMode" Value="Fixed"/>
+            </Style>
+            
+            <Style TargetType="Button">
+                <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
+                <Setter Property="TextOptions.TextRenderingMode" Value="ClearType"/>
+            </Style>
+            
             <Style TargetType="Window">
                 <Setter Property="FontFamily" Value="Segoe UI"/>
                 <Setter Property="FontSize" Value="12"/>
+                <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
+                <Setter Property="TextOptions.TextRenderingMode" Value="ClearType"/>
+                <Setter Property="UseLayoutRounding" Value="True"/>
+                <Setter Property="SnapsToDevicePixels" Value="True"/>
             </Style>
             
             <Style x:Key="CardStyle" TargetType="Border">

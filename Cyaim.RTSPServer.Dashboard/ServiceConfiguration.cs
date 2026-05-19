@@ -24,12 +24,12 @@ public static class ServiceConfiguration
                     options.MaxConnections = 10000;
                     options.SessionTimeout = 60;
 
-                    // 添加示例流
+                    // 测试图案流
                     options.Streams.Add(new StreamConfig
                     {
                         Path = "/live/camera1",
                         Name = "Camera 1",
-                        Description = "Main entrance camera",
+                        Description = "Test pattern stream",
                         SourceType = MediaSourceType.TestPattern,
                         VideoCodec = VideoCodecType.H264,
                         Width = 1920,
@@ -39,16 +39,18 @@ public static class ServiceConfiguration
                         AudioCodec = AudioCodecType.PCMA
                     });
 
+                    // MP4 文件流 - 用于测试
                     options.Streams.Add(new StreamConfig
                     {
-                        Path = "/live/camera2",
-                        Name = "Camera 2",
-                        Description = "Parking lot camera",
-                        SourceType = MediaSourceType.TestPattern,
+                        Path = "/live/mp4test",
+                        Name = "MP4 Test",
+                        Description = "MP4 file playback test",
+                        Source = @"E:\VID20241228112019.mp4",
+                        SourceType = MediaSourceType.File,
                         VideoCodec = VideoCodecType.H264,
-                        Width = 1280,
-                        Height = 720,
-                        Framerate = 15,
+                        Width = 1920,
+                        Height = 1080,
+                        Framerate = 25,
                         EnableAudio = false
                     });
                 });

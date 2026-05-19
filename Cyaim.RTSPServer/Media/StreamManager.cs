@@ -72,6 +72,17 @@ public sealed class StreamManager : IDisposable
         {
             _sources.TryAdd(config.Path, source);
             await source.StartAsync(ct);
+            
+            // 从媒体源获取 SPS/PPS 并保存到 StreamInfo
+            if (source.SpsData != null)
+            {
+                streamInfo.SpsData = source.SpsData;
+            }
+            if (source.PpsData != null)
+            {
+                streamInfo.PpsData = source.PpsData;
+            }
+            
             _logger.LogInformation("Stream created: {Path} ({Name})", config.Path, config.Name);
         }
 
@@ -166,6 +177,14 @@ public class StreamInfo
     public DateTime CreatedAt { get; set; }
     public long TotalBytesSent { get; set; }
     public int ActiveClients { get; set; }
+    /// <summary>
+    /// SPS 数据（用于 SDP sprop-parameter-sets）
+    /// </summary>
+    public byte[]? SpsData { get; set; }
+    /// <summary>
+    /// PPS 数据（用于 SDP sprop-parameter-sets）
+    /// </summary>
+    public byte[]? PpsData { get; set; }
 }
 
 /// <summary>
@@ -199,6 +218,16 @@ public interface IMediaSource : IDisposable
     /// 获取 RTP 数据包流
     /// </summary>
     IAsyncEnumerable<RtpPacket> GetPacketsAsync(CancellationToken ct);
+
+    /// <summary>
+    /// SPS 数据（H.264）
+    /// </summary>
+    byte[]? SpsData { get; }
+
+    /// <summary>
+    /// PPS 数据（H.264）
+    /// </summary>
+    byte[]? PpsData { get; }
 }
 
 /// <summary>
@@ -217,6 +246,16 @@ public class FileMediaSource : IMediaSource
     private const byte NAL_PPS = 8;
     private const byte NAL_IDR = 5;
     private const byte NAL_SLICE = 1;
+
+    /// <summary>
+    /// SPS 数据
+    /// </summary>
+    public byte[]? SpsData { get; private set; }
+
+    /// <summary>
+    /// PPS 数据
+    /// </summary>
+    public byte[]? PpsData { get; private set; }
 
     public FileMediaSource(StreamConfig config)
     {
@@ -237,29 +276,47 @@ public class FileMediaSource : IMediaSource
 
     public async IAsyncEnumerable<RtpPacket> GetPacketsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
+        System.Diagnostics.Debug.WriteLine($"FileMediaSource: Source={_config.Source}, Exists={File.Exists(_config.Source ?? "")}");
+        
         if (string.IsNullOrEmpty(_config.Source) || !File.Exists(_config.Source))
         {
+            System.Diagnostics.Debug.WriteLine("FileMediaSource: Source file not found or empty!");
             yield break;
         }
 
         string ext = Path.GetExtension(_config.Source).ToLowerInvariant();
+        System.Diagnostics.Debug.WriteLine($"FileMediaSource: File extension={ext}");
+        
         List<byte[]> nalUnits;
 
         if (ext == ".mp4" || ext == ".m4v" || ext == ".mov")
         {
             // MP4 容器格式
+            System.Diagnostics.Debug.WriteLine("FileMediaSource: Parsing MP4 file...");
             nalUnits = await ParseMp4FileAsync(_config.Source, ct);
+            System.Diagnostics.Debug.WriteLine($"FileMediaSource: MP4 parsing complete, {nalUnits.Count} NAL units");
         }
         else
         {
             // H.264 Annex-B 格式 (.h264, .264, .avc 等)
+            System.Diagnostics.Debug.WriteLine("FileMediaSource: Parsing Annex-B file...");
             byte[] fileData = await File.ReadAllBytesAsync(_config.Source, ct);
             nalUnits = ParseAnnexBNalUnits(fileData);
+            System.Diagnostics.Debug.WriteLine($"FileMediaSource: Annex-B parsing complete, {nalUnits.Count} NAL units");
         }
 
         if (nalUnits.Count == 0)
         {
+            System.Diagnostics.Debug.WriteLine("FileMediaSource: No NAL units found!");
             yield break;
+        }
+        
+        // 打印前几个 NAL 单元信息
+        for (int i = 0; i < Math.Min(5, nalUnits.Count); i++)
+        {
+            var nal = nalUnits[i];
+            byte nalType = (nal.Length > 0) ? (byte)(nal[0] & 0x1F) : (byte)0;
+            System.Diagnostics.Debug.WriteLine($"FileMediaSource: NAL[{i}] size={nal.Length}, type={nalType} (0x{nal[0]:X2})");
         }
 
         int frameCount = 0;
@@ -274,36 +331,68 @@ public class FileMediaSource : IMediaSource
             bool isKeyFrame = nalType == NAL_IDR;
             bool isSpsPps = nalType == NAL_SPS || nalType == NAL_PPS;
 
-            // 设置 marker bit: 只在帧的最后一个 NAL 设置
-            bool isLastNalInFrame = false;
-            if (nalIndex + 1 >= nalUnits.Count)
+            // 详细日志：前几个 NAL 单元
+            if (frameCount < 3)
             {
-                isLastNalInFrame = true; // 文件末尾
-            }
-            else
-            {
-                byte nextNalType = (byte)(nalUnits[nalIndex + 1][0] & 0x1F);
-                // 如果下一个 NAL 是 SPS/PPS 或 IDR，说明当前是帧的最后一个
-                if (nextNalType == NAL_SPS || nextNalType == NAL_PPS || nextNalType == NAL_IDR)
-                {
-                    isLastNalInFrame = true;
-                }
-                else if (nalType == NAL_IDR || nalType == NAL_SLICE)
-                {
-                    // 对于 slice NAL，检查时间戳是否应该更新
-                    isLastNalInFrame = true;
-                }
+                string nalHex = BitConverter.ToString(nalData, 0, Math.Min(32, nalData.Length));
+                System.Diagnostics.Debug.WriteLine($"NAL[{nalIndex}] type={nalType}, size={nalData.Length}, first32={nalHex}");
             }
 
-            byte[] rtpPacket = CreateRtpPacket(nalData, _sequenceNumber, _timestamp, isLastNalInFrame);
-            yield return new RtpPacket
+            // 设置 marker bit: 只在帧的最后一个 NAL 设置
+            // SPS/PPS 永远不设置 marker，只有 IDR 和 P-frame slice 才设置
+            bool isLastNalInFrame = false;
+            
+            if (nalType == NAL_IDR || nalType == NAL_SLICE)
             {
-                Data = rtpPacket,
-                TrackId = 0,
-                Timestamp = _timestamp,
-                SequenceNumber = _sequenceNumber++,
-                IsKeyFrame = isKeyFrame
-            };
+                // IDR 和 P-frame slice: 检查是否为当前帧的最后一个 NAL
+                if (nalIndex + 1 >= nalUnits.Count)
+                {
+                    isLastNalInFrame = true; // 文件末尾
+                }
+                else
+                {
+                    byte nextNalType = (byte)(nalUnits[nalIndex + 1][0] & 0x1F);
+                    // 如果下一个 NAL 是 SPS/PPS/IDR，说明当前是帧的最后一个
+                    if (nextNalType == NAL_SPS || nextNalType == NAL_PPS || nextNalType == NAL_IDR)
+                    {
+                        isLastNalInFrame = true;
+                    }
+                    else
+                    {
+                        // 下一个是 P-frame slice，当前也是帧的最后一个
+                        isLastNalInFrame = true;
+                    }
+                }
+            }
+            // SPS/PPS: isLastNalInFrame 保持 false
+
+            // 创建 RTP 包（支持 FU-A 分片）
+            var rtpPackets = CreateRtpPackets(nalData, _sequenceNumber, _timestamp, isLastNalInFrame);
+            
+            // 详细日志：前几个 RTP 包
+            if (frameCount < 3)
+            {
+                System.Diagnostics.Debug.WriteLine($"  Created {rtpPackets.Count} RTP packets for NAL type={nalType}");
+                for (int i = 0; i < Math.Min(3, rtpPackets.Count); i++)
+                {
+                    var (pkt, seq) = rtpPackets[i];
+                    string pktHex = BitConverter.ToString(pkt, 0, Math.Min(20, pkt.Length));
+                    System.Diagnostics.Debug.WriteLine($"    RTP[{i}] seq={seq}, size={pkt.Length}, first20={pktHex}");
+                }
+            }
+            
+            foreach (var (data, seq) in rtpPackets)
+            {
+                yield return new RtpPacket
+                {
+                    Data = data,
+                    TrackId = 0,
+                    Timestamp = _timestamp,
+                    SequenceNumber = seq,
+                    IsKeyFrame = isKeyFrame
+                };
+                _sequenceNumber = (ushort)(seq + 1);
+            }
 
             // 更新时间戳
             if (isKeyFrame || nalType == NAL_SLICE)
@@ -340,56 +429,83 @@ public class FileMediaSource : IMediaSource
         try
         {
             byte[] fileData = await File.ReadAllBytesAsync(filePath, ct);
-            using var stream = new MemoryStream(fileData);
+            System.Diagnostics.Debug.WriteLine($"MP4 file loaded: {fileData.Length} bytes");
 
-            // 解析 MP4 atoms
-            var atoms = ParseAtoms(stream, 0, fileData.Length);
+            // 解析顶层 atoms
+            var atoms = ParseAtoms(fileData, 0, fileData.Length);
+            System.Diagnostics.Debug.WriteLine($"Found {atoms.Count} top-level atoms: {string.Join(", ", atoms.Select(a => a.Type))}");
 
             // 查找 moov atom
             var moov = atoms.FirstOrDefault(a => a.Type == "moov");
-            if (moov == null) return nalUnits;
+            if (moov == null)
+            {
+                System.Diagnostics.Debug.WriteLine("ERROR: No moov atom found!");
+                return nalUnits;
+            }
+            System.Diagnostics.Debug.WriteLine($"moov atom found at offset {moov.Offset}, size {moov.Size}");
 
             // 解析 moov 内部的 atoms
-            stream.Position = moov.DataOffset;
-            var moovAtoms = ParseAtoms(stream, moov.DataOffset, moov.DataSize);
+            var moovAtoms = ParseAtoms(fileData, moov.DataOffset, moov.DataSize);
+            System.Diagnostics.Debug.WriteLine($"moov contains {moovAtoms.Count} atoms: {string.Join(", ", moovAtoms.Select(a => a.Type))}");
+
+            // 查找 mdat atom
+            var mdat = atoms.FirstOrDefault(a => a.Type == "mdat");
+            if (mdat == null)
+            {
+                System.Diagnostics.Debug.WriteLine("ERROR: No mdat atom found!");
+                return nalUnits;
+            }
+            System.Diagnostics.Debug.WriteLine($"mdat atom found at offset {mdat.Offset}, size {mdat.Size}");
 
             // 查找 trak atom (视频轨道)
             foreach (var trak in moovAtoms.Where(a => a.Type == "trak"))
             {
-                stream.Position = trak.DataOffset;
-                var trakAtoms = ParseAtoms(stream, trak.DataOffset, trak.DataSize);
+                var trakAtoms = ParseAtoms(fileData, trak.DataOffset, trak.DataSize);
+                System.Diagnostics.Debug.WriteLine($"trak contains {trakAtoms.Count} atoms");
 
                 // 检查是否为视频轨道
                 var mdia = trakAtoms.FirstOrDefault(a => a.Type == "mdia");
                 if (mdia == null) continue;
 
-                stream.Position = mdia.DataOffset;
-                var mdiaAtoms = ParseAtoms(stream, mdia.DataOffset, mdia.DataSize);
+                var mdiaAtoms = ParseAtoms(fileData, mdia.DataOffset, mdia.DataSize);
 
                 // 检查 hdlr 类型
                 var hdlr = mdiaAtoms.FirstOrDefault(a => a.Type == "hdlr");
                 if (hdlr != null)
                 {
-                    stream.Position = hdlr.DataOffset + 8; // skip version/flags
-                    byte[] hdlrData = new byte[4];
-                    stream.Read(hdlrData, 0, 4);
-                    // "vide" = video track
-                    if (hdlrData[0] != 'v' || hdlrData[1] != 'i' || hdlrData[2] != 'd' || hdlrData[3] != 'e')
-                        continue;
+                    if (hdlr.DataOffset + hdlr.DataSize <= fileData.Length)
+                    {
+                        // hdlr 格式: version(1) + flags(3) + pre_defined(4) + handler_type(4)
+                        // handler_type 在 hdlr data 的偏移 +8 处
+                        if (hdlr.DataSize >= 12)
+                        {
+                            string handlerType = System.Text.Encoding.ASCII.GetString(fileData, (int)hdlr.DataOffset + 8, 4);
+                            System.Diagnostics.Debug.WriteLine($"handler_type: '{handlerType}'");
+                            
+                            if (handlerType != "vide")
+                            {
+                                System.Diagnostics.Debug.WriteLine($"Skipping non-video track (handler_type='{handlerType}')");
+                                continue;
+                            }
+                            else
+                            {
+                                System.Diagnostics.Debug.WriteLine("Found video track!");
+                            }
+                        }
+                    }
                 }
 
                 // 解析 minf -> stbl
                 var minf = mdiaAtoms.FirstOrDefault(a => a.Type == "minf");
                 if (minf == null) continue;
 
-                stream.Position = minf.DataOffset;
-                var minfAtoms = ParseAtoms(stream, minf.DataOffset, minf.DataSize);
+                var minfAtoms = ParseAtoms(fileData, minf.DataOffset, minf.DataSize);
 
                 var stbl = minfAtoms.FirstOrDefault(a => a.Type == "stbl");
                 if (stbl == null) continue;
 
-                stream.Position = stbl.DataOffset;
-                var stblAtoms = ParseAtoms(stream, stbl.DataOffset, stbl.DataSize);
+                var stblAtoms = ParseAtoms(fileData, stbl.DataOffset, stbl.DataSize);
+                System.Diagnostics.Debug.WriteLine($"stbl contains {stblAtoms.Count} atoms: {string.Join(", ", stblAtoms.Select(a => a.Type))}");
 
                 // 解析 stsd 获取 SPS/PPS
                 byte[]? sps = null;
@@ -399,17 +515,8 @@ public class FileMediaSource : IMediaSource
                 var stsd = stblAtoms.FirstOrDefault(a => a.Type == "stsd");
                 if (stsd != null)
                 {
-                    stream.Position = stsd.DataOffset;
-                    (sps, pps, nalLengthSize) = ParseStsdForAvc(stream, stsd.DataOffset, stsd.DataSize);
-                }
-
-                // 解析 stts (time-to-sample)
-                var stts = stblAtoms.FirstOrDefault(a => a.Type == "stts");
-                List<(uint count, uint delta)>? timeSamples = null;
-                if (stts != null)
-                {
-                    stream.Position = stts.DataOffset;
-                    timeSamples = ParseStts(stream, stts.DataOffset, stts.DataSize);
+                    (sps, pps, nalLengthSize) = ParseStsdForAvc(fileData, stsd.DataOffset, stsd.DataSize);
+                    System.Diagnostics.Debug.WriteLine($"stsd parsed: SPS={sps?.Length ?? 0} bytes, PPS={pps?.Length ?? 0} bytes, nalLengthSize={nalLengthSize}");
                 }
 
                 // 解析 stsc (sample-to-chunk)
@@ -417,8 +524,8 @@ public class FileMediaSource : IMediaSource
                 List<(uint firstChunk, uint samplesPerChunk, uint sampleDescIndex)>? sampleToChunk = null;
                 if (stsc != null)
                 {
-                    stream.Position = stsc.DataOffset;
-                    sampleToChunk = ParseStsc(stream, stsc.DataOffset, stsc.DataSize);
+                    sampleToChunk = ParseStsc(fileData, stsc.DataOffset, stsc.DataSize);
+                    System.Diagnostics.Debug.WriteLine($"stsc: {sampleToChunk.Count} entries");
                 }
 
                 // 解析 stsz (sample sizes)
@@ -426,8 +533,8 @@ public class FileMediaSource : IMediaSource
                 uint[]? sampleSizes = null;
                 if (stsz != null)
                 {
-                    stream.Position = stsz.DataOffset;
-                    sampleSizes = ParseStsz(stream, stsz.DataOffset, stsz.DataSize);
+                    sampleSizes = ParseStsz(fileData, stsz.DataOffset, stsz.DataSize);
+                    System.Diagnostics.Debug.WriteLine($"stsz: {sampleSizes.Length} samples");
                 }
 
                 // 解析 stco/co64 (chunk offsets)
@@ -435,124 +542,181 @@ public class FileMediaSource : IMediaSource
                 long[]? chunkOffsets = null;
                 if (stco != null)
                 {
-                    stream.Position = stco.DataOffset;
-                    chunkOffsets = ParseChunkOffsets(stream, stco.DataOffset, stco.DataSize, stco.Type);
+                    chunkOffsets = ParseChunkOffsets(fileData, stco.DataOffset, stco.DataSize, stco.Type);
+                    System.Diagnostics.Debug.WriteLine($"stco/co64: {chunkOffsets.Length} chunks");
                 }
 
-                // 提取 mdat 数据
-                var mdat = atoms.FirstOrDefault(a => a.Type == "mdat");
-                if (mdat == null) continue;
-
                 // 如果有 SPS/PPS，添加到 NAL 单元列表
-                if (sps != null) nalUnits.Add(sps);
-                if (pps != null) nalUnits.Add(pps);
+                // 保存 SPS/PPS 到属性（用于 SDP）
+                if (sps != null && sps.Length > 0)
+                {
+                    SpsData = sps;
+                    nalUnits.Add(sps);
+                    System.Diagnostics.Debug.WriteLine($"Added SPS: {sps.Length} bytes, type=0x{sps[0]:X2}");
+                }
+                if (pps != null && pps.Length > 0)
+                {
+                    PpsData = pps;
+                    nalUnits.Add(pps);
+                    System.Diagnostics.Debug.WriteLine($"Added PPS: {pps.Length} bytes, type=0x{pps[0]:X2}");
+                }
 
                 // 提取样本数据
                 if (sampleSizes != null && chunkOffsets != null && sampleToChunk != null)
                 {
-                    var samples = ExtractSamples(fileData, sampleSizes, chunkOffsets, sampleToChunk, nalLengthSize, mdat.DataOffset);
+                    var samples = ExtractSamples(fileData, sampleSizes, chunkOffsets, sampleToChunk, nalLengthSize);
                     nalUnits.AddRange(samples);
+                    System.Diagnostics.Debug.WriteLine($"Extracted {samples.Count} NAL units from {sampleSizes.Length} samples");
                 }
 
                 break; // 只处理第一个视频轨道
             }
+            
+            System.Diagnostics.Debug.WriteLine($"Total NAL units: {nalUnits.Count}");
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"MP4 parsing error: {ex.Message}");
+            System.Diagnostics.Debug.WriteLine($"MP4 parsing error: {ex.Message}\n{ex.StackTrace}");
         }
 
         return nalUnits;
     }
 
-    private List<Mp4Atom> ParseAtoms(Stream stream, long offset, long size)
+    private List<Mp4Atom> ParseAtoms(byte[] data, long offset, long size)
     {
         var atoms = new List<Mp4Atom>();
+        long pos = offset;
         long end = offset + size;
 
-        while (stream.Position < end - 8)
+        while (pos < end - 8)
         {
-            long atomStart = stream.Position;
-            byte[] sizeBytes = new byte[4];
-            stream.Read(sizeBytes, 0, 4);
-            uint atomSize = (uint)((sizeBytes[0] << 24) | (sizeBytes[1] << 16) | (sizeBytes[2] << 8) | sizeBytes[3]);
+            if (pos + 8 > data.Length) break;
+            
+            // 读取 atom 大小和类型
+            uint atomSize = (uint)((data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3]);
+            string atomType = System.Text.Encoding.ASCII.GetString(data, (int)pos + 4, 4);
 
-            byte[] typeBytes = new byte[4];
-            stream.Read(typeBytes, 0, 4);
-            string atomType = System.Text.Encoding.ASCII.GetString(typeBytes);
-
-            if (atomSize < 8 || atomStart + atomSize > end)
-                break;
-
-            atoms.Add(new Mp4Atom
+            // 处理扩展大小 (64-bit)
+            if (atomSize == 1)
             {
-                Type = atomType,
-                Offset = atomStart,
-                Size = atomSize,
-                DataOffset = atomStart + 8,
-                DataSize = atomSize - 8
-            });
+                // 扩展大小模式：接下来 8 字节是真正的大小
+                if (pos + 16 > data.Length) break;
+                ulong extendedSize = ((ulong)data[pos + 8] << 56) | ((ulong)data[pos + 9] << 48) |
+                                     ((ulong)data[pos + 10] << 40) | ((ulong)data[pos + 11] << 32) |
+                                     ((ulong)data[pos + 12] << 24) | ((ulong)data[pos + 13] << 16) |
+                                     ((ulong)data[pos + 14] << 8) | data[pos + 15];
+                atomSize = (uint)extendedSize;
+                
+                atoms.Add(new Mp4Atom
+                {
+                    Type = atomType,
+                    Offset = pos,
+                    Size = atomSize,
+                    DataOffset = pos + 16,
+                    DataSize = atomSize - 16
+                });
+            }
+            else if (atomSize >= 8)
+            {
+                atoms.Add(new Mp4Atom
+                {
+                    Type = atomType,
+                    Offset = pos,
+                    Size = atomSize,
+                    DataOffset = pos + 8,
+                    DataSize = atomSize - 8
+                });
+            }
+            else
+            {
+                // 无效的 atom 大小，跳过
+                System.Diagnostics.Debug.WriteLine($"Invalid atom size {atomSize} at offset {pos}");
+                break;
+            }
 
-            stream.Position = atomStart + atomSize;
+            pos += atomSize;
         }
 
         return atoms;
     }
 
-    private (byte[]? sps, byte[]? pps, int nalLengthSize) ParseStsdForAvc(Stream stream, long offset, long size)
+    private (byte[]? sps, byte[]? pps, int nalLengthSize) ParseStsdForAvc(byte[] data, long offset, long size)
     {
-        stream.Position = offset;
+        long pos = offset;
 
         // stsd header: version(1) + flags(3) + entry_count(4)
-        byte[] header = new byte[8];
-        stream.Read(header, 0, 8);
+        pos += 8;
 
-        // 读取第一个 sample entry
-        byte[] entrySizeBytes = new byte[4];
-        stream.Read(entrySizeBytes, 0, 4);
-        uint entrySize = (uint)((entrySizeBytes[0] << 24) | (entrySizeBytes[1] << 16) | (entrySizeBytes[2] << 8) | entrySizeBytes[3]);
+        if (pos + 4 > data.Length) return (null, null, 4);
+        
+        // 读取第一个 sample entry 的大小
+        uint entrySize = (uint)((data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3]);
+        pos += 4;
 
-        byte[] formatBytes = new byte[4];
-        stream.Read(formatBytes, 0, 4);
-        string format = System.Text.Encoding.ASCII.GetString(formatBytes);
+        if (pos + 4 > data.Length) return (null, null, 4);
+        
+        // 读取 format (如 avc1, hvc1 等)
+        string format = System.Text.Encoding.ASCII.GetString(data, (int)pos, 4);
+        System.Diagnostics.Debug.WriteLine($"stsd format: {format}");
 
-        // 检查是否为 avc1
-        if (!format.StartsWith("avc"))
-            return (null, null, 4);
-
-        // 跳到 avcC box
-        stream.Position = offset + 8 + entrySize - 8; // 跳过保留字节
-
-        // 查找 avcC box
-        long entryEnd = offset + 8 + entrySize;
-        while (stream.Position < entryEnd - 8)
+        // 检查是否为 H.264
+        if (!format.StartsWith("avc") && format != "hvc1" && format != "hev1")
         {
-            long boxStart = stream.Position;
-            byte[] boxSizeBytes = new byte[4];
-            stream.Read(boxSizeBytes, 0, 4);
-            uint boxSize = (uint)((boxSizeBytes[0] << 24) | (boxSizeBytes[1] << 16) | (boxSizeBytes[2] << 8) | boxSizeBytes[3]);
-
-            byte[] boxTypeBytes = new byte[4];
-            stream.Read(boxTypeBytes, 0, 4);
-            string boxType = System.Text.Encoding.ASCII.GetString(boxTypeBytes);
-
-            if (boxType == "avcC")
-            {
-                // 解析 AVCDecoderConfigurationRecord
-                byte[] avccData = new byte[boxSize - 8];
-                stream.Read(avccData, 0, avccData.Length);
-
-                return ParseAvcDecoderConfig(avccData);
-            }
-
-            stream.Position = boxStart + boxSize;
+            System.Diagnostics.Debug.WriteLine($"Unsupported format: {format}");
+            return (null, null, 4);
         }
 
+        // 在 sample entry 内部查找 avcC box
+        // avc1 sample entry 有固定头部，然后是子 boxes
+        // 我们扫描整个 entry 查找 "avcC" 签名
+        long entryEnd = offset + 8 + entrySize;
+        long searchStart = pos + 4; // 从 format 字段之后开始
+
+        System.Diagnostics.Debug.WriteLine($"stsd: entrySize={entrySize}, entryEnd={entryEnd}, searchStart={searchStart}");
+
+        // 扫描查找 "avcC" 签名 (0x61766343)
+        for (long scanPos = searchStart; scanPos < entryEnd - 8; scanPos++)
+        {
+            // 检查是否为 "avcC" 签名
+            if (data[scanPos] == 0x61 && data[scanPos + 1] == 0x76 && 
+                data[scanPos + 2] == 0x63 && data[scanPos + 3] == 0x43)
+            {
+                // 找到 avcC! 回退 4 字节获取 box 大小
+                long boxStart = scanPos - 4;
+                if (boxStart >= searchStart)
+                {
+                    uint boxSize = (uint)((data[boxStart] << 24) | (data[boxStart + 1] << 16) | 
+                                          (data[boxStart + 2] << 8) | data[boxStart + 3]);
+                    
+                    System.Diagnostics.Debug.WriteLine($"  Found avcC at offset {boxStart}, size={boxSize}");
+                    
+                    if (boxSize >= 8 && boxStart + boxSize <= entryEnd)
+                    {
+                        // 解析 AVCDecoderConfigurationRecord
+                        byte[] avccData = new byte[boxSize - 8];
+                        Array.Copy(data, boxStart + 8, avccData, 0, avccData.Length);
+                        return ParseAvcDecoderConfig(avccData);
+                    }
+                }
+            }
+            // 也检查 "hvcC" (HEVC)
+            else if (data[scanPos] == 0x68 && data[scanPos + 1] == 0x76 && 
+                     data[scanPos + 2] == 0x63 && data[scanPos + 3] == 0x43)
+            {
+                System.Diagnostics.Debug.WriteLine("HEVC codec detected, not supported yet");
+                return (null, null, 4);
+            }
+        }
+
+        System.Diagnostics.Debug.WriteLine("avcC box not found in stsd");
         return (null, null, 4);
     }
 
     private (byte[] sps, byte[] pps, int nalLengthSize) ParseAvcDecoderConfig(byte[] data)
     {
+        if (data.Length < 6)
+            return (Array.Empty<byte>(), Array.Empty<byte>(), 4);
+            
         int offset = 0;
 
         // configurationVersion
@@ -567,86 +731,85 @@ public class FileMediaSource : IMediaSource
         byte lengthSizeMinusOne = (byte)(data[offset++] & 0x03);
         int nalLengthSize = lengthSizeMinusOne + 1;
 
+        System.Diagnostics.Debug.WriteLine($"AVC config: profile={profile}, level={level}, nalLengthSize={nalLengthSize}");
+
         // numOfSequenceParameterSets
         byte numSps = (byte)(data[offset++] & 0x1F);
+        System.Diagnostics.Debug.WriteLine($"numSPS={numSps}");
 
         byte[]? sps = null;
         for (int i = 0; i < numSps; i++)
         {
+            if (offset + 2 > data.Length) break;
             ushort spsLength = (ushort)((data[offset] << 8) | data[offset + 1]);
             offset += 2;
+            
+            if (offset + spsLength > data.Length) break;
             sps = new byte[spsLength];
             Array.Copy(data, offset, sps, 0, spsLength);
             offset += spsLength;
+            System.Diagnostics.Debug.WriteLine($"SPS[{i}]: {spsLength} bytes");
         }
 
+        if (offset >= data.Length) return (sps ?? Array.Empty<byte>(), Array.Empty<byte>(), nalLengthSize);
+        
         // numOfPictureParameterSets
         byte numPps = data[offset++];
+        System.Diagnostics.Debug.WriteLine($"numPPS={numPps}");
 
         byte[]? pps = null;
         for (int i = 0; i < numPps; i++)
         {
+            if (offset + 2 > data.Length) break;
             ushort ppsLength = (ushort)((data[offset] << 8) | data[offset + 1]);
             offset += 2;
+            
+            if (offset + ppsLength > data.Length) break;
             pps = new byte[ppsLength];
             Array.Copy(data, offset, pps, 0, ppsLength);
             offset += ppsLength;
+            System.Diagnostics.Debug.WriteLine($"PPS[{i}]: {ppsLength} bytes");
         }
 
-        return (sps, pps, nalLengthSize);
+        return (sps ?? Array.Empty<byte>(), pps ?? Array.Empty<byte>(), nalLengthSize);
     }
 
-    private List<(uint count, uint delta)> ParseStts(Stream stream, long offset, long size)
-    {
-        var entries = new List<(uint, uint)>();
-        stream.Position = offset;
-
-        byte[] header = new byte[8];
-        stream.Read(header, 0, 8);
-        uint entryCount = (uint)((header[4] << 24) | (header[5] << 16) | (header[6] << 8) | header[7]);
-
-        for (int i = 0; i < entryCount; i++)
-        {
-            byte[] entry = new byte[8];
-            stream.Read(entry, 0, 8);
-            uint count = (uint)((entry[0] << 24) | (entry[1] << 16) | (entry[2] << 8) | entry[3]);
-            uint delta = (uint)((entry[4] << 24) | (entry[5] << 16) | (entry[6] << 8) | entry[7]);
-            entries.Add((count, delta));
-        }
-
-        return entries;
-    }
-
-    private List<(uint firstChunk, uint samplesPerChunk, uint sampleDescIndex)> ParseStsc(Stream stream, long offset, long size)
+    private List<(uint firstChunk, uint samplesPerChunk, uint sampleDescIndex)> ParseStsc(byte[] data, long offset, long size)
     {
         var entries = new List<(uint, uint, uint)>();
-        stream.Position = offset;
+        long pos = offset;
 
-        byte[] header = new byte[8];
-        stream.Read(header, 0, 8);
-        uint entryCount = (uint)((header[4] << 24) | (header[5] << 16) | (header[6] << 8) | header[7]);
+        if (pos + 8 > data.Length) return entries;
+        
+        // version(1) + flags(3) + entry_count(4)
+        pos += 4; // skip version/flags
+        uint entryCount = (uint)((data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3]);
+        pos += 4;
 
-        for (int i = 0; i < entryCount; i++)
+        for (int i = 0; i < entryCount && pos + 12 <= data.Length; i++)
         {
-            byte[] entry = new byte[12];
-            stream.Read(entry, 0, 12);
-            uint firstChunk = (uint)((entry[0] << 24) | (entry[1] << 16) | (entry[2] << 8) | entry[3]);
-            uint samplesPerChunk = (uint)((entry[4] << 24) | (entry[5] << 16) | (entry[6] << 8) | entry[7]);
-            uint sampleDescIndex = (uint)((entry[8] << 24) | (entry[9] << 16) | (entry[10] << 8) | entry[11]);
+            uint firstChunk = (uint)((data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3]);
+            uint samplesPerChunk = (uint)((data[pos + 4] << 24) | (data[pos + 5] << 16) | (data[pos + 6] << 8) | data[pos + 7]);
+            uint sampleDescIndex = (uint)((data[pos + 8] << 24) | (data[pos + 9] << 16) | (data[pos + 10] << 8) | data[pos + 11]);
             entries.Add((firstChunk, samplesPerChunk, sampleDescIndex));
+            pos += 12;
         }
 
         return entries;
     }
 
-    private uint[] ParseStsz(Stream stream, long offset, long size)
+    private uint[] ParseStsz(byte[] data, long offset, long size)
     {
-        stream.Position = offset;
+        long pos = offset;
 
-        byte[] header = new byte[12];
-        stream.Read(header, 0, 12);
-        uint sampleSize = (uint)((header[4] << 24) | (header[5] << 16) | (header[6] << 8) | header[7]);
-        uint sampleCount = (uint)((header[8] << 24) | (header[9] << 16) | (header[10] << 8) | header[11]);
+        if (pos + 12 > data.Length) return Array.Empty<uint>();
+        
+        // version(1) + flags(3)
+        pos += 4;
+        uint sampleSize = (uint)((data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3]);
+        pos += 4;
+        uint sampleCount = (uint)((data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3]);
+        pos += 4;
 
         if (sampleSize != 0)
         {
@@ -655,41 +818,41 @@ public class FileMediaSource : IMediaSource
         }
 
         var sizes = new uint[sampleCount];
-        for (int i = 0; i < sampleCount; i++)
+        for (int i = 0; i < sampleCount && pos + 4 <= data.Length; i++)
         {
-            byte[] sizeBytes = new byte[4];
-            stream.Read(sizeBytes, 0, 4);
-            sizes[i] = (uint)((sizeBytes[0] << 24) | (sizeBytes[1] << 16) | (sizeBytes[2] << 8) | sizeBytes[3]);
+            sizes[i] = (uint)((data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3]);
+            pos += 4;
         }
 
         return sizes;
     }
 
-    private long[] ParseChunkOffsets(Stream stream, long offset, long size, string type)
+    private long[] ParseChunkOffsets(byte[] data, long offset, long size, string type)
     {
-        stream.Position = offset;
+        long pos = offset;
 
-        byte[] header = new byte[8];
-        stream.Read(header, 0, 8);
-        uint entryCount = (uint)((header[4] << 24) | (header[5] << 16) | (header[6] << 8) | header[7]);
+        if (pos + 8 > data.Length) return Array.Empty<long>();
+        
+        // version(1) + flags(3)
+        pos += 4;
+        uint entryCount = (uint)((data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3]);
+        pos += 4;
 
         var offsets = new long[entryCount];
         int bytesPerEntry = type == "co64" ? 8 : 4;
 
-        for (int i = 0; i < entryCount; i++)
+        for (int i = 0; i < entryCount && pos + bytesPerEntry <= data.Length; i++)
         {
-            byte[] entry = new byte[bytesPerEntry];
-            stream.Read(entry, 0, bytesPerEntry);
-
             if (bytesPerEntry == 8)
             {
-                offsets[i] = ((long)entry[0] << 56) | ((long)entry[1] << 48) | ((long)entry[2] << 40) | ((long)entry[3] << 32) |
-                             ((long)entry[4] << 24) | ((long)entry[5] << 16) | ((long)entry[6] << 8) | entry[7];
+                offsets[i] = ((long)data[pos] << 56) | ((long)data[pos + 1] << 48) | ((long)data[pos + 2] << 40) | ((long)data[pos + 3] << 32) |
+                             ((long)data[pos + 4] << 24) | ((long)data[pos + 5] << 16) | ((long)data[pos + 6] << 8) | data[pos + 7];
             }
             else
             {
-                offsets[i] = (entry[0] << 24) | (entry[1] << 16) | (entry[2] << 8) | entry[3];
+                offsets[i] = (data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3];
             }
+            pos += bytesPerEntry;
         }
 
         return offsets;
@@ -697,11 +860,10 @@ public class FileMediaSource : IMediaSource
 
     private List<byte[]> ExtractSamples(byte[] fileData, uint[] sampleSizes, long[] chunkOffsets,
         List<(uint firstChunk, uint samplesPerChunk, uint sampleDescIndex)> sampleToChunk,
-        int nalLengthSize, long mdatOffset)
+        int nalLengthSize)
     {
         var samples = new List<byte[]>();
         int sampleIndex = 0;
-        int stscIndex = 0;
 
         for (int chunkIdx = 0; chunkIdx < chunkOffsets.Length; chunkIdx++)
         {
@@ -722,12 +884,27 @@ public class FileMediaSource : IMediaSource
             {
                 uint sampleSize = sampleSizes[sampleIndex];
 
+                // 检查边界
+                if (chunkOffset + sampleSize > fileData.Length)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Sample {sampleIndex} out of bounds: offset={chunkOffset}, size={sampleSize}, fileSize={fileData.Length}");
+                    sampleIndex++;
+                    continue;
+                }
+
                 // 读取样本数据
                 byte[] sampleData = new byte[sampleSize];
                 Array.Copy(fileData, chunkOffset, sampleData, 0, sampleSize);
 
                 // 转换 AVCC 格式到 Annex-B 格式
                 var nalUnits = ConvertAvccToAnnexB(sampleData, nalLengthSize);
+                
+                // 为每个样本的第一帧添加调试信息
+                if (sampleIndex < 5 && nalUnits.Count > 0)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Sample {sampleIndex}: size={sampleSize}, NALs={nalUnits.Count}, firstNAL type=0x{nalUnits[0][0]:X2}");
+                }
+                
                 samples.AddRange(nalUnits);
 
                 chunkOffset += sampleSize;
@@ -741,7 +918,6 @@ public class FileMediaSource : IMediaSource
     /// <summary>
     /// 将 AVCC 格式的样本转换为 Annex-B 格式的 NAL 单元
     /// AVCC: [length][NAL][length][NAL]...
-    /// Annex-B: [00 00 00 01][NAL][00 00 00 01][NAL]...
     /// </summary>
     private List<byte[]> ConvertAvccToAnnexB(byte[] sampleData, int nalLengthSize)
     {
@@ -761,7 +937,7 @@ public class FileMediaSource : IMediaSource
             }
             offset += nalLengthSize;
 
-            if (offset + nalLength > sampleData.Length)
+            if (nalLength == 0 || offset + nalLength > sampleData.Length)
                 break;
 
             // 提取 NAL 数据
@@ -853,28 +1029,71 @@ public class FileMediaSource : IMediaSource
 
     #region RTP Packet Creation
 
-    private byte[] CreateRtpPacket(byte[] nalData, ushort sequenceNumber, uint timestamp, bool isMarker)
+    /// <summary>
+    /// 创建 RTP 包（支持 FU-A 分片）
+    /// 返回一个或多个 RTP 包，序列号自动递增
+    /// </summary>
+    private List<(byte[] data, ushort seq)> CreateRtpPackets(byte[] nalData, ushort startSeq, uint timestamp, bool isMarker)
     {
+        var packets = new List<(byte[] data, ushort seq)>();
         int rtpHeaderSize = 12;
-        int maxPacketSize = 1400;
+        int maxPayloadSize = 1400; // MTU 限制
+        ushort seq = startSeq;
 
-        if (nalData.Length <= maxPacketSize)
+        if (nalData.Length <= maxPayloadSize)
         {
+            // 单个 NAL 单元模式
             var packet = new byte[rtpHeaderSize + nalData.Length];
-            WriteRtpHeader(packet, sequenceNumber, timestamp, isMarker);
+            WriteRtpHeader(packet, seq, timestamp, isMarker);
             Array.Copy(nalData, 0, packet, rtpHeaderSize, nalData.Length);
-            return packet;
+            packets.Add((packet, seq));
         }
         else
         {
-            // TODO: 实现完整的 FU-A 分片
-            var packet = new byte[rtpHeaderSize + maxPacketSize];
-            WriteRtpHeader(packet, sequenceNumber, timestamp, isMarker);
-            Array.Copy(nalData, 0, packet, rtpHeaderSize, maxPacketSize);
-            return packet;
+            // FU-A 分片模式
+            byte nalHeader = nalData[0];
+            byte nalType = (byte)(nalHeader & 0x1F);
+            byte nri = (byte)(nalHeader & 0x60); // NRI bits
+            
+            // FU indicator: F(1) + NRI(2) + Type(5)=28
+            byte fuIndicator = (byte)((nalHeader & 0x80) | nri | 28);
+            
+            int offset = 1; // 跳过 NAL header
+            int remaining = nalData.Length - 1;
+            bool firstFragment = true;
+            
+            while (remaining > 0)
+            {
+                int chunkSize = Math.Min(remaining, maxPayloadSize - 2); // 减去 FU indicator + FU header
+                bool lastFragment = (remaining <= maxPayloadSize - 2);
+                
+                // FU header: S(1) + E(1) + R(1) + Type(5)
+                byte fuHeader = nalType;
+                if (firstFragment) fuHeader |= 0x80; // Start bit
+                if (lastFragment) fuHeader |= 0x40;  // End bit
+                
+                // 创建包
+                var packet = new byte[rtpHeaderSize + 2 + chunkSize];
+                WriteRtpHeader(packet, seq, timestamp, lastFragment && isMarker);
+                packet[rtpHeaderSize] = fuIndicator;
+                packet[rtpHeaderSize + 1] = fuHeader;
+                Array.Copy(nalData, offset, packet, rtpHeaderSize + 2, chunkSize);
+                
+                packets.Add((packet, seq));
+                seq++;
+                
+                offset += chunkSize;
+                remaining -= chunkSize;
+                firstFragment = false;
+            }
         }
+
+        return packets;
     }
 
+    /// <summary>
+    /// 写入 RTP 头
+    /// </summary>
     private void WriteRtpHeader(byte[] packet, ushort sequenceNumber, uint timestamp, bool isMarker)
     {
         packet[0] = 0x80;
@@ -911,6 +1130,16 @@ public class RtspPullMediaSource : IMediaSource
         SingleReader = false,
         SingleWriter = true
     });
+
+    /// <summary>
+    /// SPS 数据
+    /// </summary>
+    public byte[]? SpsData { get; private set; }
+
+    /// <summary>
+    /// PPS 数据
+    /// </summary>
+    public byte[]? PpsData { get; private set; }
 
     public RtspPullMediaSource(StreamConfig config)
     {
@@ -1035,6 +1264,16 @@ public class TestPatternMediaSource : IMediaSource
     private uint _timestamp;
     private ushort _sequenceNumber;
 
+    /// <summary>
+    /// SPS 数据
+    /// </summary>
+    public byte[]? SpsData { get; private set; }
+
+    /// <summary>
+    /// PPS 数据
+    /// </summary>
+    public byte[]? PpsData { get; private set; }
+
     public TestPatternMediaSource(StreamConfig config)
     {
         _config = config;
@@ -1043,6 +1282,11 @@ public class TestPatternMediaSource : IMediaSource
     public Task StartAsync(CancellationToken ct)
     {
         _running = true;
+        
+        // 生成 SPS/PPS 并保存到属性
+        SpsData = GenerateSPS();
+        PpsData = GeneratePPS();
+        
         return Task.CompletedTask;
     }
 
