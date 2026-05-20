@@ -166,11 +166,14 @@
                                 Background="{TemplateBinding Background}" 
                                 CornerRadius="6" 
                                 Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <ContentPresenter x:Name="content" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="border" Property="Background" Value="{StaticResource HoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="content" Property="Opacity" Value="0.35"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -568,7 +571,7 @@
                                                             ToolTip="Start Stream"
                                                             IsEnabled="{Binding DataContext.IsServerRunning, RelativeSource={RelativeSource AncestorType=Window}}"/>
                                                     <Button x:Name="StopBtn" Content="⏹" Margin="0,0,4,0" Padding="8,4" 
-                                                            Style="{StaticResource ActionButton}"
+                                                            Style="{StaticResource DangerActionButton}"
                                                             Tag="{Binding Path}" Click="OnStopStream"
                                                             ToolTip="Stop Stream"
                                                             IsEnabled="{Binding DataContext.IsServerRunning, RelativeSource={RelativeSource AncestorType=Window}}"/>

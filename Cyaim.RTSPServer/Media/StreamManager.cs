@@ -240,9 +240,12 @@ public sealed class StreamManager : IDisposable
     {
         return config.SourceType switch
         {
-            MediaSourceType.File => new FileMediaSource(config),
+            MediaSourceType.File => new FileMediaSource(config, this),
             MediaSourceType.RtspPull => new RtspPullMediaSource(config),
             MediaSourceType.TestPattern => new TestPatternMediaSource(config),
+            MediaSourceType.RtmpPush => new RtmpPushMediaSource(config),
+            MediaSourceType.Camera => new CameraMediaSource(config),
+            MediaSourceType.Screen => new ScreenCaptureMediaSource(config),
             _ => null
         };
     }
@@ -342,11 +345,25 @@ public interface IMediaSource : IDisposable
 public class FileMediaSource : IMediaSource
 {
     private readonly StreamConfig _config;
+    private readonly StreamManager _owner;  // 用于更新 StreamInfo
     private bool _running;
-    private uint _videoTimestamp;
-    private uint _audioTimestamp;
+
+    // Video timing
     private ushort _videoSequenceNumber;
+    private uint _videoTimestamp;
+    
+    // Audio timing
     private ushort _audioSequenceNumber;
+    private uint _audioTimestamp;
+
+    // Video data
+    private List<byte[]> _videoNalUnits = new();
+    
+    // Audio data
+    private List<byte[]> _audioSamples = new();
+    private int _audioSampleRate = 44100;
+    private int _audioChannels = 2;
+    private AudioCodecType _audioCodec = AudioCodecType.AAC;
 
     // H.264 NAL unit types
     private const byte NAL_SPS = 7;
@@ -364,307 +381,269 @@ public class FileMediaSource : IMediaSource
     /// </summary>
     public byte[]? PpsData { get; private set; }
 
-    public FileMediaSource(StreamConfig config)
+    public FileMediaSource(StreamConfig config, StreamManager owner)
     {
         _config = config;
+        _owner = owner;
     }
+
+    private CancellationTokenSource? _producerCts;
+    private Channel<RtpPacket>? _packetChannel;
 
     public Task StartAsync(CancellationToken ct)
     {
         _running = true;
+        _packetChannel = Channel.CreateBounded<RtpPacket>(new BoundedChannelOptions(5000)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,  // 超载时丢旧包，避免生产者阻塞
+            SingleWriter = true,
+            SingleReader = false
+        });
+
+        _producerCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _ = Task.Run(() => ProducePacketsAsync(_producerCts.Token), _producerCts.Token);
         return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken ct)
     {
         _running = false;
+        _producerCts?.Cancel();
+        _packetChannel?.Writer.TryComplete();
         return Task.CompletedTask;
     }
 
-    public async IAsyncEnumerable<RtpPacket> GetPacketsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    public async IAsyncEnumerable<RtpPacket> GetPacketsAsync(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
-        System.Diagnostics.Debug.WriteLine($"FileMediaSource: Source={_config.Source}, Exists={File.Exists(_config.Source ?? "")}");
-        
-        if (string.IsNullOrEmpty(_config.Source) || !File.Exists(_config.Source))
-        {
-            System.Diagnostics.Debug.WriteLine("FileMediaSource: Source file not found or empty!");
+        if (_packetChannel == null)
             yield break;
-        }
 
-        string ext = Path.GetExtension(_config.Source).ToLowerInvariant();
-        System.Diagnostics.Debug.WriteLine($"FileMediaSource: File extension={ext}");
-        
-        List<byte[]> nalUnits;
+        await foreach (var packet in _packetChannel.Reader.ReadAllAsync(ct))
+        {
+            yield return packet;
+        }
+    }
 
-        if (ext == ".mp4" || ext == ".m4v" || ext == ".mov")
+    /// <summary>
+    /// 生产者：生成视频和音频 RTP 包写入 Channel（单路运行，避免双路枚举）
+    /// </summary>
+    private async Task ProducePacketsAsync(CancellationToken ct)
+    {
+        try
         {
-            // MP4 容器格式
-            System.Diagnostics.Debug.WriteLine("FileMediaSource: Parsing MP4 file...");
-            nalUnits = await ParseMp4FileAsync(_config.Source, ct);
-            System.Diagnostics.Debug.WriteLine($"FileMediaSource: MP4 parsing complete, {nalUnits.Count} NAL units");
-        }
-        else
-        {
-            // H.264 Annex-B 格式 (.h264, .264, .avc 等)
-            System.Diagnostics.Debug.WriteLine("FileMediaSource: Parsing Annex-B file...");
-            byte[] fileData = await File.ReadAllBytesAsync(_config.Source, ct);
-            nalUnits = ParseAnnexBNalUnits(fileData);
-            System.Diagnostics.Debug.WriteLine($"FileMediaSource: Annex-B parsing complete, {nalUnits.Count} NAL units");
-        }
+            System.Diagnostics.Debug.WriteLine($"FileMediaSource: Source={_config.Source}, Exists={File.Exists(_config.Source ?? "")}");
 
-        if (nalUnits.Count == 0)
-        {
-            System.Diagnostics.Debug.WriteLine("FileMediaSource: No NAL units found!");
-            yield break;
-        }
-        
-        // 打印前几个 NAL 单元信息
-        for (int i = 0; i < Math.Min(5, nalUnits.Count); i++)
-        {
-            var nal = nalUnits[i];
-            byte nalType = (nal.Length > 0) ? (byte)(nal[0] & 0x1F) : (byte)0;
-            System.Diagnostics.Debug.WriteLine($"FileMediaSource: NAL[{i}] size={nal.Length}, type={nalType} (0x{nal[0]:X2})");
-        }
-
-        // 分离 SPS/PPS 和视频帧数据
-        byte[]? spsData = SpsData;
-        byte[]? ppsData = PpsData;
-        var videoNalUnits = new List<byte[]>();
-        
-        foreach (var nal in nalUnits)
-        {
-            byte nalType = (byte)(nal[0] & 0x1F);
-            if (nalType != NAL_SPS && nalType != NAL_PPS)
+            if (string.IsNullOrEmpty(_config.Source) || !File.Exists(_config.Source))
             {
-                videoNalUnits.Add(nal);
+                System.Diagnostics.Debug.WriteLine("FileMediaSource: Source file not found or empty!");
+                return;
             }
-        }
-        
-        System.Diagnostics.Debug.WriteLine($"FileMediaSource: Separated {videoNalUnits.Count} video NAL units, SPS={spsData?.Length ?? 0} bytes, PPS={ppsData?.Length ?? 0} bytes");
 
-        // 提取音频数据（如果有）
-        List<byte[]> audioSamples = new();
-        int audioSampleRate = _config.AudioCodec switch
-        {
-            AudioCodecType.PCMA => 8000,
-            AudioCodecType.PCMU => 8000,
-            AudioCodecType.AAC => 44100,
-            AudioCodecType.OPUS => 48000,
-            _ => 8000
-        };
-        
-        if (_config.EnableAudio && _config.AudioCodec != AudioCodecType.None)
-        {
-            // TODO: 从 MP4 提取音频样本
-            // 目前仅支持视频，音频需要额外实现 MP4 音频轨道解析
-            System.Diagnostics.Debug.WriteLine("FileMediaSource: Audio support not yet implemented for MP4 files");
-        }
+            string ext = Path.GetExtension(_config.Source).ToLowerInvariant();
+            System.Diagnostics.Debug.WriteLine($"FileMediaSource: File extension={ext}");
 
-        int frameCount = 0;
-        int nalIndex = 0;
-        int audioIndex = 0;
-        bool loop = _config.Loop;
-        
-        // 使用 Stopwatch 实现精确计时
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        long frameIntervalTicks = (long)(System.Diagnostics.Stopwatch.Frequency / (double)_config.Framerate);
-        long nextFrameTicks = stopwatch.ElapsedTicks;
-        long startTimeTicks = stopwatch.ElapsedTicks;
+            List<byte[]> nalUnits;
 
-        while (_running && !ct.IsCancellationRequested)
-        {
-            // 精确等待到下一帧时间
-            long currentTicks = stopwatch.ElapsedTicks;
-            if (currentTicks < nextFrameTicks)
+            if (ext == ".mp4" || ext == ".m4v" || ext == ".mov")
             {
-                // 计算需要等待的时间（毫秒）
-                long waitTicks = nextFrameTicks - currentTicks;
-                int waitMs = (int)(waitTicks * 1000 / System.Diagnostics.Stopwatch.Frequency);
-                if (waitMs > 0)
+                System.Diagnostics.Debug.WriteLine("FileMediaSource: Parsing MP4 file...");
+                nalUnits = await ParseMp4FileAsync(_config.Source, ct);
+                System.Diagnostics.Debug.WriteLine($"FileMediaSource: MP4 parsing complete, {nalUnits.Count} NAL units");
+            }
+            else
+            {
+                System.Diagnostics.Debug.WriteLine("FileMediaSource: Parsing Annex-B file...");
+                byte[] fileData = await File.ReadAllBytesAsync(_config.Source, ct);
+                nalUnits = ParseAnnexBNalUnits(fileData);
+                System.Diagnostics.Debug.WriteLine($"FileMediaSource: Annex-B parsing complete, {nalUnits.Count} NAL units");
+            }
+
+            if (nalUnits.Count == 0)
+            {
+                System.Diagnostics.Debug.WriteLine("FileMediaSource: No NAL units found!");
+                return;
+            }
+
+            // 分离 SPS/PPS 和视频帧数据
+            byte[]? spsData = SpsData;
+            byte[]? ppsData = PpsData;
+            var videoNalUnits = new List<byte[]>();
+
+            foreach (var nal in nalUnits)
+            {
+                byte nalType = (byte)(nal[0] & 0x1F);
+                if (nalType != NAL_SPS && nalType != NAL_PPS)
+                    videoNalUnits.Add(nal);
+            }
+
+            System.Diagnostics.Debug.WriteLine($"FileMediaSource: Separated {videoNalUnits.Count} video NAL units");
+
+            // 提取音频数据（如果有）
+            if (_config.EnableAudio && _config.AudioCodec != AudioCodecType.None
+                && (ext == ".mp4" || ext == ".m4v" || ext == ".mov"))
+            {
+                var audioResult = await ParseMp4AudioTrackAsync(_config.Source, ct);
+                _audioSamples = audioResult.samples;
+                _audioSampleRate = audioResult.sampleRate;
+                _audioChannels = audioResult.channels;
+                _audioCodec = audioResult.codec;
+                System.Diagnostics.Debug.WriteLine($"FileMediaSource: Audio parsed: {_audioSamples.Count} frames, " +
+                    $"sr={_audioSampleRate}, ch={_audioChannels}");
+
+                // 更新 StreamInfo 以匹配实际文件中的音频格式
+                var info = _owner.GetStream(_config.Path);
+                if (info != null)
                 {
-                    await Task.Delay(waitMs, ct);
-                }
-                // 忙等待剩余的微秒级时间
-                while (stopwatch.ElapsedTicks < nextFrameTicks && !ct.IsCancellationRequested)
-                {
-                    Thread.SpinWait(100);
+                    info.AudioCodec = _audioCodec;
+                    info.SampleRate = _audioSampleRate;
+                    info.Channels = _audioChannels;
                 }
             }
-            
-            nextFrameTicks += frameIntervalTicks;
 
-            byte[] nalData = videoNalUnits[nalIndex];
-            byte nalType = (byte)(nalData[0] & 0x1F);
-
-            bool isKeyFrame = nalType == NAL_IDR;
-            
-            // 详细日志：前几个 NAL 单元
-            if (frameCount < 3)
+            // 计算音频帧间隔（毫秒）
+            int audioFrameSize = _audioCodec switch
             {
-                string nalHex = BitConverter.ToString(nalData, 0, Math.Min(32, nalData.Length));
-                System.Diagnostics.Debug.WriteLine($"NAL[{nalIndex}] type={nalType}, size={nalData.Length}, first32={nalHex}");
-            }
+                AudioCodecType.PCMA => 160,
+                AudioCodecType.PCMU => 160,
+                AudioCodecType.AAC => 1024,
+                AudioCodecType.OPUS => 960,
+                _ => 160
+            };
+            double audioFrameIntervalMs = 1000.0 * audioFrameSize / _audioSampleRate;
 
-            // 在发送 IDR 帧之前，确保 SPS/PPS 已发送
-            // 这是解决 VLC 首屏绿色遮罩问题的关键
-            if (isKeyFrame && spsData != null && ppsData != null)
+            int frameCount = 0;
+            int nalIndex = 0;
+            int audioIndex = 0;
+            bool loop = _config.Loop;
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            long frameIntervalTicks = (long)(System.Diagnostics.Stopwatch.Frequency / (double)_config.Framerate);
+            long nextVideoTick = stopwatch.ElapsedTicks;
+            long nextAudioTick = stopwatch.ElapsedTicks;
+            long audioIntervalTicks = (long)(System.Diagnostics.Stopwatch.Frequency * audioFrameIntervalMs / 1000.0);
+
+            while (_running && !ct.IsCancellationRequested)
             {
-                // 每个 IDR 帧前都发送 SPS/PPS，确保解码器正确初始化
-                System.Diagnostics.Debug.WriteLine($"Sending SPS/PPS before IDR frame (frame {frameCount})");
-                
-                // SPS - 不设置 marker bit
-                var spsRtpPackets = CreateRtpPackets(spsData, _videoSequenceNumber, _videoTimestamp, false);
-                foreach (var (data, seq) in spsRtpPackets)
+                long now = stopwatch.ElapsedTicks;
+                bool videoDue = now >= nextVideoTick;
+                bool audioDue = now >= nextAudioTick && _audioSamples.Count > 0;
+
+                // 如果两个都没到时间，等待最近的那个
+                if (!videoDue && !audioDue)
                 {
-                    yield return new RtpPacket
+                    // 只考虑实际存在的轨道的时间
+                    long nextTick = _audioSamples.Count > 0
+                        ? Math.Min(nextVideoTick, nextAudioTick)
+                        : nextVideoTick;
+                    long waitTicks = nextTick - now;
+                    int waitMs = (int)(waitTicks * 1000 / System.Diagnostics.Stopwatch.Frequency);
+                    if (waitMs > 0)
+                        await Task.Delay(waitMs, ct);
+                    continue;
+                }
+
+                // 发送视频包
+                if (videoDue)
+                {
+                    nextVideoTick += frameIntervalTicks;
+
+                    byte[] nalData = videoNalUnits[nalIndex];
+                    byte nalType = (byte)(nalData[0] & 0x1F);
+                    bool isKeyFrame = nalType == NAL_IDR;
+
+                    if (isKeyFrame && spsData != null && ppsData != null)
                     {
-                        Data = data,
-                        TrackId = 0,
-                        Timestamp = _videoTimestamp,
-                        SequenceNumber = seq,
-                        IsKeyFrame = false
-                    };
-                    _videoSequenceNumber = (ushort)(seq + 1);
-                }
-                
-                // PPS - 不设置 marker bit
-                var ppsRtpPackets = CreateRtpPackets(ppsData, _videoSequenceNumber, _videoTimestamp, false);
-                foreach (var (data, seq) in ppsRtpPackets)
-                {
-                    yield return new RtpPacket
-                    {
-                        Data = data,
-                        TrackId = 0,
-                        Timestamp = _videoTimestamp,
-                        SequenceNumber = seq,
-                        IsKeyFrame = false
-                    };
-                    _videoSequenceNumber = (ushort)(seq + 1);
-                }
-            }
-
-            // 设置 marker bit: 只在帧的最后一个 NAL 设置
-            // SPS/PPS 永远不设置 marker，只有 IDR 和 P-frame slice 才设置
-            bool isLastNalInFrame = false;
-            
-            if (nalType == NAL_IDR || nalType == NAL_SLICE)
-            {
-                // IDR 和 P-frame slice: 检查是否为当前帧的最后一个 NAL
-                if (nalIndex + 1 >= videoNalUnits.Count)
-                {
-                    isLastNalInFrame = true; // 文件末尾
-                }
-                else
-                {
-                    byte nextNalType = (byte)(videoNalUnits[nalIndex + 1][0] & 0x1F);
-                    // 如果下一个 NAL 是 IDR，说明当前是帧的最后一个
-                    // 注意：连续的 P-frame slice 属于同一帧
-                    if (nextNalType == NAL_IDR || nextNalType == NAL_SPS || nextNalType == NAL_PPS)
-                    {
-                        isLastNalInFrame = true;
+                        var spsPkts = CreateRtpPackets(spsData, _videoSequenceNumber, _videoTimestamp, false);
+                        foreach (var (data, seq) in spsPkts)
+                        {
+                            _packetChannel!.Writer.TryWrite(new RtpPacket
+                            {
+                                Data = data, TrackId = 0, Timestamp = _videoTimestamp,
+                                SequenceNumber = seq, IsKeyFrame = false
+                            });
+                            _videoSequenceNumber = (ushort)(seq + 1);  // 始终递增，丢包时有 gap
+                        }
+                        var ppsPkts = CreateRtpPackets(ppsData, _videoSequenceNumber, _videoTimestamp, false);
+                        foreach (var (data, seq) in ppsPkts)
+                        {
+                            _packetChannel!.Writer.TryWrite(new RtpPacket
+                            {
+                                Data = data, TrackId = 0, Timestamp = _videoTimestamp,
+                                SequenceNumber = seq, IsKeyFrame = false
+                            });
+                            _videoSequenceNumber = (ushort)(seq + 1);
+                        }
                     }
-                    // 对于连续的 SLICE NAL，只有当后面没有更多 SLICE 时才标记为最后一帧
-                    // 简化处理：假设每个 SLICE NAL 是独立的一帧（大多数 MP4 文件如此）
-                    else if (nalType == NAL_SLICE && nextNalType == NAL_SLICE)
+
+                    bool isLastNal = nalIndex + 1 >= videoNalUnits.Count
+                        || (videoNalUnits[nalIndex + 1][0] & 0x1F) == NAL_IDR;
+                    var rtpPkts = CreateRtpPackets(nalData, _videoSequenceNumber, _videoTimestamp, isLastNal);
+                    foreach (var (data, seq) in rtpPkts)
                     {
-                        isLastNalInFrame = true; // 每个 P-frame 作为独立帧处理
+                        _packetChannel!.Writer.TryWrite(new RtpPacket
+                        {
+                            Data = data, TrackId = 0, Timestamp = _videoTimestamp,
+                            SequenceNumber = seq, IsKeyFrame = isKeyFrame
+                        });
+                        _videoSequenceNumber = (ushort)(seq + 1);
+                    }
+
+                    if (isKeyFrame || nalType == NAL_SLICE)
+                    {
+                        _videoTimestamp += (uint)(90000 / _config.Framerate);
+                        frameCount++;
+                    }
+
+                    nalIndex++;
+                    if (nalIndex >= videoNalUnits.Count)
+                    {
+                        if (loop)
+                        {
+                            nalIndex = 0;
+                            audioIndex = 0;
+                            frameCount = 0;
+                            nextVideoTick = stopwatch.ElapsedTicks;
+                        }
+                        else break;
+                    }
+                }
+
+                // 发送音频包（按音频时钟独立发送，不受视频帧率约束）
+                if (audioDue)
+                {
+                    nextAudioTick += audioIntervalTicks;
+
+                    if (audioIndex < _audioSamples.Count)
+                    {
+                        byte[] audioData = _audioSamples[audioIndex];
+                        var audioPkt = CreateAudioRtpPacket(audioData, _audioSequenceNumber, _audioTimestamp);
+
+                        _packetChannel!.Writer.TryWrite(new RtpPacket
+                        {
+                            Data = audioPkt, TrackId = 1, Timestamp = _audioTimestamp,
+                            SequenceNumber = _audioSequenceNumber, IsKeyFrame = false
+                        });
+                        _audioSequenceNumber++;
+                        _audioTimestamp += (uint)audioFrameSize;
+
+                        audioIndex++;
+                        if (audioIndex >= _audioSamples.Count && loop)
+                            audioIndex = 0;
                     }
                 }
             }
 
-            // 创建 RTP 包（支持 FU-A 分片）
-            var rtpPackets = CreateRtpPackets(nalData, _videoSequenceNumber, _videoTimestamp, isLastNalInFrame);
-            
-            // 详细日志：前几个 RTP 包
-            if (frameCount < 3)
-            {
-                System.Diagnostics.Debug.WriteLine($"  Created {rtpPackets.Count} RTP packets for NAL type={nalType}, marker={isLastNalInFrame}");
-                for (int i = 0; i < Math.Min(3, rtpPackets.Count); i++)
-                {
-                    var (pkt, seq) = rtpPackets[i];
-                    string pktHex = BitConverter.ToString(pkt, 0, Math.Min(20, pkt.Length));
-                    System.Diagnostics.Debug.WriteLine($"    RTP[{i}] seq={seq}, size={pkt.Length}, first20={pktHex}");
-                }
-            }
-            
-            foreach (var (data, seq) in rtpPackets)
-            {
-                yield return new RtpPacket
-                {
-                    Data = data,
-                    TrackId = 0,
-                    Timestamp = _videoTimestamp,
-                    SequenceNumber = seq,
-                    IsKeyFrame = isKeyFrame
-                };
-                _videoSequenceNumber = (ushort)(seq + 1);
-            }
-
-            // 更新视频时间戳 (90kHz 时钟)
-            if (isKeyFrame || nalType == NAL_SLICE)
-            {
-                _videoTimestamp += (uint)(90000 / _config.Framerate);
-                frameCount++;
-            }
-
-            // 发送音频包（如果有）
-            if (audioSamples.Count > 0 && audioIndex < audioSamples.Count)
-            {
-                // 计算音频时间戳
-                // 音频时间戳基于样本数和采样率
-                int audioFrameSize = _config.AudioCodec switch
-                {
-                    AudioCodecType.PCMA => 160,  // 20ms @ 8kHz
-                    AudioCodecType.PCMU => 160,
-                    AudioCodecType.AAC => 1024,
-                    _ => 160
-                };
-                
-                byte[] audioData = audioSamples[audioIndex];
-                var audioRtpPacket = CreateAudioRtpPacket(audioData, _audioSequenceNumber, _audioTimestamp);
-                
-                yield return new RtpPacket
-                {
-                    Data = audioRtpPacket,
-                    TrackId = 1,  // 音频轨道
-                    Timestamp = _audioTimestamp,
-                    SequenceNumber = _audioSequenceNumber,
-                    IsKeyFrame = false
-                };
-                
-                _audioSequenceNumber++;
-                _audioTimestamp += (uint)audioFrameSize;
-                
-                audioIndex++;
-                if (audioIndex >= audioSamples.Count && loop)
-                {
-                    audioIndex = 0;
-                }
-            }
-
-            nalIndex++;
-            if (nalIndex >= videoNalUnits.Count)
-            {
-                if (loop)
-                {
-                    System.Diagnostics.Debug.WriteLine($"FileMediaSource: Looping video (frame {frameCount} completed)");
-                    
-                    nalIndex = 0;
-                    audioIndex = 0;
-                    frameCount = 0;
-                    
-                    // 重置下一帧时间为当前时间，避免积压大量待发送帧
-                    nextFrameTicks = stopwatch.ElapsedTicks;
-                    
-                    // 注意：时间戳和序列号不重置，保持连续递增
-                    // 这是 RTSP/RTP 标准做法，避免播放器解码器状态混乱
-                }
-                else
-                {
-                    System.Diagnostics.Debug.WriteLine($"FileMediaSource: Video playback completed ({frameCount} frames)");
-                    break;
-                }
-            }
+            System.Diagnostics.Debug.WriteLine($"FileMediaSource: done ({frameCount} frames)");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"FileMediaSource producer error: {ex.Message}");
+        }
+        finally
+        {
+            _packetChannel?.Writer.TryComplete();
         }
     }
 
@@ -1366,45 +1345,209 @@ public class FileMediaSource : IMediaSource
     /// </summary>
     private byte[] CreateAudioRtpPacket(byte[] audioData, ushort sequenceNumber, uint timestamp)
     {
-        int rtpHeaderSize = 12;
-        var packet = new byte[rtpHeaderSize + audioData.Length];
-        
-        // RTP header
-        packet[0] = 0x80; // V=2
-        
-        // 音频 payload type: PCMA=8, PCMU=0, AAC=97
-        byte payloadType = _config.AudioCodec switch
+        byte payloadType = _audioCodec switch
         {
             AudioCodecType.PCMA => 8,
             AudioCodecType.PCMU => 0,
             AudioCodecType.AAC => 97,
+            AudioCodecType.OPUS => 102,
             _ => 8
         };
-        packet[1] = (byte)(payloadType & 0x7F); // M=0 for audio
-        
-        // Sequence number
+
+        // AAC-hbr mode: raw AAC frames, no AU-headers (declared in SDP fmtp)
+        int rtpHeaderSize = 12;
+        var packet = new byte[rtpHeaderSize + audioData.Length];
+
+        packet[0] = 0x80;
+        packet[1] = (byte)(payloadType & 0x7F);
         packet[2] = (byte)(sequenceNumber >> 8);
         packet[3] = (byte)(sequenceNumber & 0xFF);
-        
-        // Timestamp (音频时钟频率: 8kHz for PCMA/PCMU, 44.1kHz for AAC)
         packet[4] = (byte)(timestamp >> 24);
         packet[5] = (byte)((timestamp >> 16) & 0xFF);
         packet[6] = (byte)((timestamp >> 8) & 0xFF);
         packet[7] = (byte)(timestamp & 0xFF);
-        
-        // SSRC
-        packet[8] = 0x12;
-        packet[9] = 0x34;
-        packet[10] = 0x56;
-        packet[11] = 0x79;  // 音频使用不同的 SSRC
-        
-        // Audio data
+        packet[8] = 0x12;  packet[9] = 0x34;
+        packet[10] = 0x56; packet[11] = 0x79;
+
         Array.Copy(audioData, 0, packet, rtpHeaderSize, audioData.Length);
-        
         return packet;
     }
 
     #endregion
+
+    /// <summary>
+    /// Parse audio track from MP4 file (AAC/MP3)
+    /// </summary>
+    private async Task<(List<byte[]> samples, int sampleRate, int channels, AudioCodecType codec)> 
+        ParseMp4AudioTrackAsync(string filePath, CancellationToken ct)
+    {
+        var samples = new List<byte[]>();
+        int sampleRate = 44100;
+        int channels = 2;
+        AudioCodecType codec = AudioCodecType.AAC;
+
+        try
+        {
+            byte[] fileData = await File.ReadAllBytesAsync(filePath, ct);
+            var atoms = ParseAtoms(fileData, 0, fileData.Length);
+            var moov = atoms.FirstOrDefault(a => a.Type == "moov");
+            if (moov == null) return (samples, sampleRate, channels, codec);
+
+            var moovAtoms = ParseAtoms(fileData, moov.DataOffset, moov.DataSize);
+            var mdat = atoms.FirstOrDefault(a => a.Type == "mdat");
+            if (mdat == null) return (samples, sampleRate, channels, codec);
+
+            // Find audio track
+            foreach (var trak in moovAtoms.Where(a => a.Type == "trak"))
+            {
+                var trakAtoms = ParseAtoms(fileData, trak.DataOffset, trak.DataSize);
+                var mdia = trakAtoms.FirstOrDefault(a => a.Type == "mdia");
+                if (mdia == null) continue;
+
+                var mdiaAtoms = ParseAtoms(fileData, mdia.DataOffset, mdia.DataSize);
+                var hdlr = mdiaAtoms.FirstOrDefault(a => a.Type == "hdlr");
+                if (hdlr == null || hdlr.DataSize < 12) continue;
+
+                string handlerType = System.Text.Encoding.ASCII.GetString(fileData, (int)hdlr.DataOffset + 8, 4);
+                if (handlerType != "soun") continue;
+
+                System.Diagnostics.Debug.WriteLine("Found audio track!");
+
+                var minf = mdiaAtoms.FirstOrDefault(a => a.Type == "minf");
+                if (minf == null) continue;
+                var minfAtoms = ParseAtoms(fileData, minf.DataOffset, minf.DataSize);
+                var stbl = minfAtoms.FirstOrDefault(a => a.Type == "stbl");
+                if (stbl == null) continue;
+                var stblAtoms = ParseAtoms(fileData, stbl.DataOffset, stbl.DataSize);
+
+                // Parse stsd for audio codec info
+                var stsd = stblAtoms.FirstOrDefault(a => a.Type == "stsd");
+                if (stsd != null)
+                {
+                    var audioInfo = ParseAudioStsd(fileData, stsd.DataOffset, stsd.DataSize);
+                    sampleRate = audioInfo.sampleRate;
+                    channels = audioInfo.channels;
+                    codec = audioInfo.codec;
+                }
+
+                // Parse sample tables
+                var stsc = stblAtoms.FirstOrDefault(a => a.Type == "stsc");
+                var stsz = stblAtoms.FirstOrDefault(a => a.Type == "stsz");
+                var stco = stblAtoms.FirstOrDefault(a => a.Type == "stco" || a.Type == "co64");
+
+                if (stsc == null || stsz == null || stco == null) continue;
+
+                var sampleToChunk = ParseStsc(fileData, stsc.DataOffset, stsc.DataSize);
+                var sampleSizes = ParseStsz(fileData, stsz.DataOffset, stsz.DataSize);
+                var chunkOffsets = ParseChunkOffsets(fileData, stco.DataOffset, stco.DataSize, stco.Type);
+
+                // Extract audio samples from mdat
+                int sampleIndex = 0;
+                for (int chunkIdx = 0; chunkIdx < chunkOffsets.Length; chunkIdx++)
+                {
+                    uint samplesInChunk = sampleToChunk[0].samplesPerChunk;
+                    for (int i = sampleToChunk.Count - 1; i >= 0; i--)
+                    {
+                        if (chunkIdx + 1 >= sampleToChunk[i].firstChunk)
+                        {
+                            samplesInChunk = sampleToChunk[i].samplesPerChunk;
+                            break;
+                        }
+                    }
+
+                    long chunkOffset = chunkOffsets[chunkIdx];
+                    for (int s = 0; s < samplesInChunk && sampleIndex < sampleSizes.Length; s++)
+                    {
+                        uint size = sampleSizes[sampleIndex];
+                        if (chunkOffset + size <= fileData.Length && size > 0)
+                        {
+                            byte[] sampleData = new byte[size];
+                            Array.Copy(fileData, chunkOffset, sampleData, 0, size);
+                            samples.Add(sampleData);
+                            chunkOffset += size;
+                        }
+                        sampleIndex++;
+                    }
+                }
+
+                System.Diagnostics.Debug.WriteLine($"Audio: {samples.Count} frames, sampleRate={sampleRate}, channels={channels}");
+                break;
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Audio parsing error: {ex.Message}");
+        }
+
+        return (samples, sampleRate, channels, codec);
+    }
+
+    /// <summary>
+    /// Parse audio stsd entry (mp4a format)
+    /// </summary>
+    private static (int sampleRate, int channels, AudioCodecType codec) ParseAudioStsd(
+        byte[] data, long offset, long size)
+    {
+        long pos = offset + 8; // skip version/flags/entry_count
+        if (pos + 4 > data.Length) return (44100, 2, AudioCodecType.AAC);
+
+        uint entrySize = (uint)((data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3]);
+        pos += 4;
+
+        // Scan for mp4a atom within the entry
+        long entryEnd = offset + 8 + entrySize;
+        for (long scan = pos; scan < entryEnd - 8; scan++)
+        {
+            if (data[scan] == 'm' && data[scan + 1] == 'p' && data[scan + 2] == '4' && data[scan + 3] == 'a')
+            {
+                // Found mp4a - ES descriptor follows
+                // Quick parse: look for sample rate (4 bytes) and channels (2 bytes) 
+                // typically at fixed offset 24 within mp4a
+                long mp4aStart = scan - 4; // atom size is before the type
+                if (mp4aStart >= 0)
+                {
+                    uint mp4aSize = (uint)((data[mp4aStart] << 24) | (data[mp4aStart + 1] << 16) |
+                                            (data[mp4aStart + 2] << 8) | data[mp4aStart + 3]);
+                    long mp4aEnd = mp4aStart + mp4aSize;
+                    
+                    // Look for esds atom within mp4a
+                    for (long es = scan + 4; es < mp4aEnd - 8; es++)
+                    {
+                        if (data[es] == 'e' && data[es + 1] == 's' && data[es + 2] == 'd' && data[es + 3] == 's')
+                        {
+                            long esdsDataStart = es + 8;
+                            long esdsDataEnd = es + ((data[es - 4] << 24) | (data[es - 3] << 16) |
+                                                       (data[es - 2] << 8) | data[es - 1]);
+                            
+                            // ES_Descriptor: tag 0x03
+                            // DecoderConfigDescriptor: tag 0x04
+                            // DecoderSpecificInfo: tag 0x05
+                            for (long p = esdsDataStart + 4; p < esdsDataEnd - 2; p++)
+                            {
+                                // Look for DecoderConfigDescriptor tag
+                                if (data[p] == 0x04)
+                                {
+                                    long dcdStart = p;
+                                    // Sample rate at offset +3 (3 bytes): objectTypeIndication + flags + sampleRate
+                                    // ... actual layout is complex, simplify by looking for common patterns
+                                    
+                                    // Try to read 4-byte sample rate at common offset
+                                    if (dcdStart + 15 < esdsDataEnd)
+                                    {
+                                        int sr = (data[dcdStart + 13] << 8) | data[dcdStart + 14];
+                                        if (sr > 0) return (sr, 2, AudioCodecType.AAC);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
+        return (44100, 2, AudioCodecType.AAC);
+    }
 
     public void Dispose() { }
 }
@@ -1933,4 +2076,285 @@ internal class BitWriter
     {
         return _buffer.ToArray();
     }
+}
+
+/// <summary>
+/// RTMP 推流源
+/// 接受外部 RTMP 推流并转发为 RTSP
+/// </summary>
+public class RtmpPushMediaSource : IMediaSource
+{
+    private readonly StreamConfig _config;
+    private bool _running;
+
+    public byte[]? SpsData { get; private set; }
+    public byte[]? PpsData { get; private set; }
+
+    public RtmpPushMediaSource(StreamConfig config)
+    {
+        _config = config;
+    }
+
+    public Task StartAsync(CancellationToken ct)
+    {
+        _running = true;
+        // TODO: 实现 RTMP 服务器，监听推流连接
+        System.Diagnostics.Debug.WriteLine($"RTMP push source: {_config.Path} (listening on port {_config.Source ?? "1935"})");
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken ct)
+    {
+        _running = false;
+        return Task.CompletedTask;
+    }
+
+    public async IAsyncEnumerable<RtpPacket> GetPacketsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        // Placeholder: 等待 RTMP 推流数据
+        while (_running && !ct.IsCancellationRequested)
+        {
+            await Task.Delay(1000, ct);
+        }
+        yield break;
+    }
+
+    public void Dispose() { _running = false; }
+}
+
+/// <summary>
+/// 摄像头源
+/// 从本地摄像头采集视频
+/// </summary>
+public class CameraMediaSource : IMediaSource
+{
+    private readonly StreamConfig _config;
+    private bool _running;
+    private uint _timestamp;
+    private ushort _sequenceNumber;
+
+    public byte[]? SpsData { get; private set; }
+    public byte[]? PpsData { get; private set; }
+
+    public CameraMediaSource(StreamConfig config)
+    {
+        _config = config;
+    }
+
+    public Task StartAsync(CancellationToken ct)
+    {
+        _running = true;
+        SpsData = GenerateSps();
+        PpsData = GeneratePps();
+        System.Diagnostics.Debug.WriteLine($"Camera source: {_config.Path} (device: {_config.Source ?? "default"})");
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken ct)
+    {
+        _running = false;
+        return Task.CompletedTask;
+    }
+
+    public async IAsyncEnumerable<RtpPacket> GetPacketsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        // TODO: 使用 DirectShow/MediaFoundation 采集摄像头
+        // Fallback: 使用测试图案
+        int frameCount = 0;
+        while (_running && !ct.IsCancellationRequested)
+        {
+            bool isKeyFrame = frameCount % (_config.Framerate * 2) == 0;
+            byte[] nalData;
+
+            if (isKeyFrame)
+            {
+                // 发送 SPS + PPS + IDR
+                yield return CreatePacket(SpsData!, _sequenceNumber++, _timestamp, false, true);
+                yield return CreatePacket(PpsData!, _sequenceNumber++, _timestamp, false, false);
+                nalData = GenerateIdrFrame();
+            }
+            else
+            {
+                nalData = GeneratePFrame();
+            }
+
+            yield return CreatePacket(nalData, _sequenceNumber++, _timestamp, true, isKeyFrame);
+            _timestamp += (uint)(90000 / _config.Framerate);
+            frameCount++;
+            await Task.Delay(1000 / _config.Framerate, ct);
+        }
+    }
+
+    private RtpPacket CreatePacket(byte[] nalData, ushort seq, uint ts, bool marker, bool isKeyFrame)
+    {
+        byte[] rtpPacket = new byte[12 + nalData.Length];
+        rtpPacket[0] = 0x80;
+        rtpPacket[1] = (byte)((marker ? 0x80 : 0x00) | 96);
+        rtpPacket[2] = (byte)(seq >> 8);
+        rtpPacket[3] = (byte)(seq & 0xFF);
+        rtpPacket[4] = (byte)(ts >> 24);
+        rtpPacket[5] = (byte)((ts >> 16) & 0xFF);
+        rtpPacket[6] = (byte)((ts >> 8) & 0xFF);
+        rtpPacket[7] = (byte)(ts & 0xFF);
+        rtpPacket[8] = 0x12; rtpPacket[9] = 0x34; rtpPacket[10] = 0x56; rtpPacket[11] = 0x78;
+        Array.Copy(nalData, 0, rtpPacket, 12, nalData.Length);
+        return new RtpPacket { Data = rtpPacket, TrackId = 0, Timestamp = ts, SequenceNumber = seq, IsKeyFrame = isKeyFrame };
+    }
+
+    private static byte[] GenerateSps()
+    {
+        var w = new BitWriter();
+        w.WriteBits(0, 1); w.WriteBits(3, 2); w.WriteBits(7, 5);
+        w.WriteExpGolomb(66); w.WriteBit(true); w.WriteBit(true);
+        w.WriteBit(false); w.WriteBit(false); w.WriteBits(0, 4); w.WriteExpGolomb(30);
+        w.WriteExpGolomb(0); w.WriteExpGolomb(1); w.WriteExpGolomb(1);
+        w.WriteBit(true); w.WriteExpGolomb(0); w.WriteExpGolomb(0);
+        w.WriteBit(false); w.WriteBit(true); return w.ToArray();
+    }
+
+    private static byte[] GeneratePps()
+    {
+        var w = new BitWriter();
+        w.WriteBits(0, 1); w.WriteBits(3, 2); w.WriteBits(8, 5);
+        w.WriteExpGolomb(0); w.WriteExpGolomb(0); w.WriteBit(false); w.WriteBit(true);
+        w.WriteBit(true); return w.ToArray();
+    }
+
+    private static byte[] GenerateIdrFrame()
+    {
+        var w = new BitWriter();
+        w.WriteBits(0, 1); w.WriteBits(3, 2); w.WriteBits(5, 5);
+        w.WriteExpGolomb(0); w.WriteExpGolomb(0); w.WriteBit(false);
+        for (int i = 0; i < 10; i++) w.WriteBit(true);
+        return w.ToArray();
+    }
+
+    private static byte[] GeneratePFrame()
+    {
+        var w = new BitWriter();
+        w.WriteBits(0, 1); w.WriteBits(2, 2); w.WriteBits(1, 5);
+        w.WriteExpGolomb(0); w.WriteExpGolomb(0);
+        for (int i = 0; i < 5; i++) w.WriteBit(true);
+        return w.ToArray();
+    }
+
+    public void Dispose() { _running = false; }
+}
+
+/// <summary>
+/// 屏幕捕获源
+/// 捕获屏幕内容作为视频流
+/// </summary>
+public class ScreenCaptureMediaSource : IMediaSource
+{
+    private readonly StreamConfig _config;
+    private bool _running;
+    private uint _timestamp;
+    private ushort _sequenceNumber;
+
+    public byte[]? SpsData { get; private set; }
+    public byte[]? PpsData { get; private set; }
+
+    public ScreenCaptureMediaSource(StreamConfig config)
+    {
+        _config = config;
+    }
+
+    public Task StartAsync(CancellationToken ct)
+    {
+        _running = true;
+        SpsData = GenerateSps();
+        PpsData = GeneratePps();
+        System.Diagnostics.Debug.WriteLine($"Screen capture source: {_config.Path}");
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken ct)
+    {
+        _running = false;
+        return Task.CompletedTask;
+    }
+
+    public async IAsyncEnumerable<RtpPacket> GetPacketsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        // TODO: 使用 Windows.Graphics.Capture 或 DXGI 屏幕捕获
+        // Fallback: 使用测试图案
+        int frameCount = 0;
+        while (_running && !ct.IsCancellationRequested)
+        {
+            bool isKeyFrame = frameCount % (_config.Framerate * 2) == 0;
+
+            if (isKeyFrame)
+            {
+                yield return CreatePacket(SpsData!, _sequenceNumber++, _timestamp, false, true);
+                yield return CreatePacket(PpsData!, _sequenceNumber++, _timestamp, false, false);
+                byte[] idr = GenerateIdrFrame();
+                yield return CreatePacket(idr, _sequenceNumber++, _timestamp, true, true);
+            }
+            else
+            {
+                byte[] pFrame = GeneratePFrame();
+                yield return CreatePacket(pFrame, _sequenceNumber++, _timestamp, true, false);
+            }
+
+            _timestamp += (uint)(90000 / _config.Framerate);
+            frameCount++;
+            await Task.Delay(1000 / _config.Framerate, ct);
+        }
+    }
+
+    private RtpPacket CreatePacket(byte[] nalData, ushort seq, uint ts, bool marker, bool isKeyFrame)
+    {
+        byte[] rtpPacket = new byte[12 + nalData.Length];
+        rtpPacket[0] = 0x80;
+        rtpPacket[1] = (byte)((marker ? 0x80 : 0x00) | 96);
+        rtpPacket[2] = (byte)(seq >> 8);
+        rtpPacket[3] = (byte)(seq & 0xFF);
+        rtpPacket[4] = (byte)(ts >> 24);
+        rtpPacket[5] = (byte)((ts >> 16) & 0xFF);
+        rtpPacket[6] = (byte)((ts >> 8) & 0xFF);
+        rtpPacket[7] = (byte)(ts & 0xFF);
+        rtpPacket[8] = 0x12; rtpPacket[9] = 0x34; rtpPacket[10] = 0x56; rtpPacket[11] = 0x78;
+        Array.Copy(nalData, 0, rtpPacket, 12, nalData.Length);
+        return new RtpPacket { Data = rtpPacket, TrackId = 0, Timestamp = ts, SequenceNumber = seq, IsKeyFrame = isKeyFrame };
+    }
+
+    private static byte[] GenerateSps()
+    {
+        var w = new BitWriter();
+        w.WriteBits(0, 1); w.WriteBits(3, 2); w.WriteBits(7, 5);
+        w.WriteExpGolomb(66); w.WriteBit(true); w.WriteBit(true);
+        w.WriteBit(false); w.WriteBit(false); w.WriteBits(0, 4); w.WriteExpGolomb(30);
+        w.WriteExpGolomb(0); w.WriteExpGolomb(1); w.WriteExpGolomb(1);
+        w.WriteBit(true); w.WriteExpGolomb(0); w.WriteExpGolomb(0);
+        w.WriteBit(false); w.WriteBit(true); return w.ToArray();
+    }
+
+    private static byte[] GeneratePps()
+    {
+        var w = new BitWriter();
+        w.WriteBits(0, 1); w.WriteBits(3, 2); w.WriteBits(8, 5);
+        w.WriteExpGolomb(0); w.WriteExpGolomb(0); w.WriteBit(false); w.WriteBit(true);
+        w.WriteBit(true); return w.ToArray();
+    }
+
+    private static byte[] GenerateIdrFrame()
+    {
+        var w = new BitWriter();
+        w.WriteBits(0, 1); w.WriteBits(3, 2); w.WriteBits(5, 5);
+        w.WriteExpGolomb(0); w.WriteExpGolomb(0); w.WriteBit(false);
+        for (int i = 0; i < 10; i++) w.WriteBit(true);
+        return w.ToArray();
+    }
+
+    private static byte[] GeneratePFrame()
+    {
+        var w = new BitWriter();
+        w.WriteBits(0, 1); w.WriteBits(2, 2); w.WriteBits(1, 5);
+        w.WriteExpGolomb(0); w.WriteExpGolomb(0);
+        for (int i = 0; i < 5; i++) w.WriteBit(true);
+        return w.ToArray();
+    }
+
+    public void Dispose() { _running = false; }
 }

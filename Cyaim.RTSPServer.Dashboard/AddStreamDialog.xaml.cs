@@ -233,25 +233,35 @@ public class AddStreamDialog : Window
     public void SetEditMode(StreamViewModel stream)
     {
         Title = "Edit Stream";
-        ((TextBlock)((StackPanel)((Border)Content).Child).Children[0]).Text = "Edit Stream";
         
-        _pathBox.Text = stream.Path;
-        _nameBox.Text = stream.Name;
-        _descBox.Text = stream.Description;
+        // 安全地更新 header
+        if (Content is Border border && border.Child is StackPanel mainStack && mainStack.Children.Count > 0)
+        {
+            if (mainStack.Children[0] is TextBlock header)
+                header.Text = "Edit Stream";
+        }
+
+        _pathBox!.Text = stream.Path;
+        _nameBox!.Text = stream.Name;
+        _descBox!.Text = stream.Description;
         _pathBox.IsEnabled = false; // 路径不可编辑
         
-        // 根据现有配置设置其他字段
+        // Source
+        if (Enum.TryParse<MediaSourceType>(stream.SourceType, out var sourceType))
+            _sourceCombo!.SelectedItem = sourceType;
+        _sourceUrlBox!.Text = stream.SourceUrl ?? "";
+        
+        // Video
         if (Enum.TryParse<VideoCodecType>(stream.VideoCodec, out var codec))
-            _codecCombo.SelectedItem = codec;
+            _codecCombo!.SelectedItem = codec;
+        _widthBox!.Text = stream.VideoWidth > 0 ? stream.VideoWidth.ToString() : "1920";
+        _heightBox!.Text = stream.VideoHeight > 0 ? stream.VideoHeight.ToString() : "1080";
+        _fpsBox!.Text = stream.Framerate.ToString();
         
-        var res = stream.Resolution.Split('x');
-        if (res.Length == 2)
-        {
-            _widthBox.Text = res[0];
-            _heightBox.Text = res[1];
-        }
-        
-        _fpsBox.Text = stream.Framerate.ToString();
+        // Audio
+        _audioCheck!.IsChecked = stream.EnableAudio;
+        if (Enum.TryParse<AudioCodecType>(stream.AudioCodec, out var audioCodec))
+            _audioCodecCombo!.SelectedItem = audioCodec;
     }
 
     private void OnSourceTypeChanged(object sender, SelectionChangedEventArgs e)

@@ -232,7 +232,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnEditStream(object sender, RoutedEventArgs e)
+    private async void OnEditStream(object sender, RoutedEventArgs e)
     {
         if (sender is Button button && button.Tag is string path)
         {
@@ -244,9 +244,31 @@ public partial class MainWindow : Window
             
             if (dialog.ShowDialog() == true)
             {
-                // 更新流配置（目前只更新UI，实际需要实现更新逻辑）
+                // 更新 ViewModel
                 stream.Name = dialog.StreamName;
                 stream.Description = dialog.Description;
+                stream.SourceType = dialog.SourceType.ToString();
+                stream.SourceUrl = dialog.SourceUrl ?? "";
+                stream.VideoCodec = dialog.VideoCodec.ToString();
+                stream.VideoWidth = dialog.VideoWidth;
+                stream.VideoHeight = dialog.VideoHeight;
+                stream.Resolution = $"{dialog.VideoWidth}x{dialog.VideoHeight}";
+                stream.Framerate = dialog.Framerate;
+                stream.EnableAudio = dialog.EnableAudio;
+                stream.AudioCodec = dialog.EnableAudio ? dialog.AudioCodec.ToString() : "None";
+
+                // 尝试更新实际的流配置（需要停止/删除/重建）
+                try
+                {
+                    await _serverService.UpdateStreamAsync(path, dialog.SourceType, dialog.SourceUrl ?? "", 
+                        dialog.VideoCodec, dialog.VideoWidth, dialog.VideoHeight, dialog.Framerate,
+                        dialog.EnableAudio, dialog.AudioCodec);
+                }
+                catch (Exception ex)
+                {
+                    Log($"Warning: stream config update partial: {ex.Message}");
+                }
+                
                 RefreshStreams();
                 Log($"Stream updated: {path}");
             }

@@ -90,11 +90,16 @@ public class RtspServerService : IDisposable
                 Name = config.Name,
                 Description = config.Description ?? "",
                 SourceType = config.SourceType.ToString(),
+                SourceUrl = config.Source ?? "",
                 VideoCodec = config.VideoCodec.ToString(),
+                AudioCodec = config.EnableAudio ? config.AudioCodec.ToString() : "None",
                 Resolution = $"{config.Width}x{config.Height}",
                 Framerate = config.Framerate,
-                Status = "Stopped",  // 初始状态为停止，需要手动启动
-                ActiveClients = 0
+                Status = "Stopped",
+                ActiveClients = 0,
+                EnableAudio = config.EnableAudio,
+                VideoWidth = config.Width,
+                VideoHeight = config.Height
             });
         }
     }
@@ -221,11 +226,16 @@ public class RtspServerService : IDisposable
                 Name = config.Name,
                 Description = config.Description ?? "",
                 SourceType = config.SourceType.ToString(),
+                SourceUrl = config.Source ?? "",
                 VideoCodec = config.VideoCodec.ToString(),
+                AudioCodec = config.EnableAudio ? config.AudioCodec.ToString() : "None",
                 Resolution = $"{config.Width}x{config.Height}",
                 Framerate = config.Framerate,
                 Status = "Ready",
-                ActiveClients = 0
+                ActiveClients = 0,
+                EnableAudio = config.EnableAudio,
+                VideoWidth = config.Width,
+                VideoHeight = config.Height
             });
 
             AddLog($"Stream added: {config.Path} ({config.Name})", LogLevel.Information);
@@ -310,6 +320,57 @@ public class RtspServerService : IDisposable
         catch (Exception ex)
         {
             AddLog($"Failed to stop stream: {ex.Message}", LogLevel.Error);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 更新流配置（需要流处于停止状态才能更新）
+    /// </summary>
+    public async Task<bool> UpdateStreamAsync(string path, MediaSourceType sourceType, string sourceUrl,
+        VideoCodecType videoCodec, int width, int height, int framerate,
+        bool enableAudio, AudioCodecType audioCodec)
+    {
+        var stream = _streams.FirstOrDefault(s => s.Path == path);
+        if (stream == null)
+        {
+            AddLog($"Stream not found for update: {path}", LogLevel.Warning);
+            return false;
+        }
+
+        if (stream.Status == "Streaming")
+        {
+            AddLog($"Cannot update streaming '{path}' - stop it first", LogLevel.Warning);
+            return false;
+        }
+
+        // 如果流在运行，先停止再重建
+        try
+        {
+            await _streamManager.RemoveStreamAsync(path, _cts?.Token ?? CancellationToken.None);
+
+            var config = new StreamConfig
+            {
+                Path = path,
+                Name = stream.Name,
+                Description = stream.Description,
+                Source = sourceUrl,
+                SourceType = sourceType,
+                VideoCodec = videoCodec,
+                Width = width,
+                Height = height,
+                Framerate = framerate,
+                EnableAudio = enableAudio,
+                AudioCodec = audioCodec
+            };
+            await _streamManager.CreateStreamAsync(config, _cts?.Token ?? CancellationToken.None, autoStart: false);
+
+            AddLog($"Stream config updated: {path}", LogLevel.Information);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AddLog($"Failed to update stream: {ex.Message}", LogLevel.Error);
             return false;
         }
     }
@@ -526,11 +587,16 @@ public class StreamViewModel
     public string Name { get; set; } = "";
     public string Description { get; set; } = "";
     public string SourceType { get; set; } = "";
+    public string SourceUrl { get; set; } = "";
     public string VideoCodec { get; set; } = "";
+    public string AudioCodec { get; set; } = "None";
     public string Resolution { get; set; } = "";
     public int Framerate { get; set; }
-    public string Status { get; set; } = "Ready";
+    public string Status { get; set; } = "Stopped";
     public int ActiveClients { get; set; }
+    public bool EnableAudio { get; set; }
+    public int VideoWidth { get; set; }
+    public int VideoHeight { get; set; }
 }
 
 public class ClientViewModel

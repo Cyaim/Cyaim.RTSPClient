@@ -21,6 +21,7 @@ public sealed class RtspSession : IDisposable
     private readonly StreamManager _streamManager;
     private readonly ILogger? _logger;
     private readonly CancellationTokenSource _cts = new();
+    private readonly SemaphoreSlim _streamLock = new(1, 1);  // 序列化 TCP interleaved 写入
 
     private string _sessionId = Guid.NewGuid().ToString("N")[..8];
     private RtspSessionState _state = RtspSessionState.Connected;
@@ -555,6 +556,10 @@ public sealed class RtspSession : IDisposable
                 if (_state != RtspSessionState.Playing || ct.IsCancellationRequested)
                     break;
 
+                // 按 TrackId 过滤：每个轨道只发送匹配的包
+                if (packet.TrackId != stream.TrackId)
+                    continue;
+
                 await SendRtpPacketAsync(stream, packet.Data, ct);
                 packetCount++;
 
@@ -581,30 +586,35 @@ public sealed class RtspSession : IDisposable
         int bytesSent;
         if (stream.RtpSocket != null)
         {
-            // UDP 模式: 直接发送原始 RTP 数据
             await stream.RtpSocket.SendAsync(data, ct);
             bytesSent = data.Length;
         }
         else
         {
-            // TCP interleaved 格式: $ + channel + length(2) + data
-            byte[] header = new byte[4];
-            header[0] = 0x24; // $
-            header[1] = (byte)stream.InterleavedChannel;
-            header[2] = (byte)((data.Length >> 8) & 0xFF);
-            header[3] = (byte)(data.Length & 0xFF);
+            // TCP interleaved: header+data 合并为单次 WriteAsync，减少锁时间和 fragmentation
+            int frameLen = 4 + data.Length;
+            await _streamLock.WaitAsync(ct);
+            try
+            {
+                byte[] frame = new byte[frameLen];
+                frame[0] = 0x24;
+                frame[1] = (byte)stream.InterleavedChannel;
+                frame[2] = (byte)((data.Length >> 8) & 0xFF);
+                frame[3] = (byte)(data.Length & 0xFF);
+                Array.Copy(data, 0, frame, 4, data.Length);
 
-            await _stream.WriteAsync(header, ct);
-            await _stream.WriteAsync(data, ct);
-            await _stream.FlushAsync(ct);
-            bytesSent = 4 + data.Length;
+                await _stream.WriteAsync(frame, ct);
+                await _stream.FlushAsync(ct);
+            }
+            finally
+            {
+                _streamLock.Release();
+            }
+            bytesSent = frameLen;
         }
 
-        // 记录发送的字节数
         if (!string.IsNullOrEmpty(_currentStreamPath))
-        {
             _streamManager.RecordBytesSent(_currentStreamPath, bytesSent);
-        }
     }
 
     #endregion
@@ -709,6 +719,7 @@ public sealed class RtspSession : IDisposable
                 AudioCodecType.PCMA => 8,
                 AudioCodecType.PCMU => 0,
                 AudioCodecType.AAC => 97,
+                AudioCodecType.OPUS => 102,
                 _ => 8
             };
 
@@ -717,11 +728,25 @@ public sealed class RtspSession : IDisposable
                 AudioCodecType.PCMA => "PCMA",
                 AudioCodecType.PCMU => "PCMU",
                 AudioCodecType.AAC => "MPEG4-GENERIC",
+                AudioCodecType.OPUS => "OPUS",
                 _ => "PCMA"
             };
 
             sb.Append($"m=audio 0 RTP/AVP {payloadType}").Append(CRLF);
             sb.Append($"a=rtpmap:{payloadType} {codecName}/{streamInfo.SampleRate}/{streamInfo.Channels}").Append(CRLF);
+
+            // AAC fmtp for RFC 3640 (required for proper decoding)
+            if (streamInfo.AudioCodec == AudioCodecType.AAC)
+            {
+                // AudioSpecificConfig: AAC-LC, 44100Hz, stereo = 0x1210
+                // Or if mono: 0x1208
+                string asc = streamInfo.Channels >= 2 ? "1210" : "1208";
+                sb.Append($"a=fmtp:{payloadType} streamtype=5; profile-level-id=1; ")
+                  .Append($"mode=AAC-hbr; config={asc}; ")
+                  .Append("sizeLength=13; indexLength=3; indexDeltaLength=3")
+                  .Append(CRLF);
+            }
+
             sb.Append("a=control:trackID=1").Append(CRLF);
             sb.Append("a=sendonly").Append(CRLF);
         }
