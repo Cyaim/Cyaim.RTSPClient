@@ -5,9 +5,43 @@ using Cyaim.RTSPClient.Media.Codecs;
 using Cyaim.RTSPClient.Codecs.FFmpeg.Video;
 using Cyaim.RTSPClient.Codecs.FFmpeg.Audio.Decoders;
 using Cyaim.RTSPClient.Codecs.FFmpeg.Audio.Encoders;
+using FFmpeg.AutoGen;
 
 namespace Cyaim.RTSPClient.Codecs.FFmpeg.Audio
 {
+    internal static class FFmpegAudioCodecProbe
+    {
+        public static AVCodecID ToCodecId(AudioCodec codec) => codec switch
+        {
+            AudioCodec.AAC => AVCodecID.AV_CODEC_ID_AAC,
+            AudioCodec.OPUS => AVCodecID.AV_CODEC_ID_OPUS,
+            AudioCodec.AMR => AVCodecID.AV_CODEC_ID_AMR_NB,
+            AudioCodec.AMR_WB => AVCodecID.AV_CODEC_ID_AMR_WB,
+            AudioCodec.SPEEX => AVCodecID.AV_CODEC_ID_SPEEX,
+            AudioCodec.VORBIS => AVCodecID.AV_CODEC_ID_VORBIS,
+            AudioCodec.MPA => AVCodecID.AV_CODEC_ID_MP3,
+            _ => AVCodecID.AV_CODEC_ID_NONE
+        };
+
+        /// <summary>
+        /// 当前 FFmpeg 构建是否真的带该解码器（如 Speex/AMR 常缺）
+        /// </summary>
+        public static unsafe bool HasDecoder(AudioCodec codec)
+        {
+            var id = ToCodecId(codec);
+            return id != AVCodecID.AV_CODEC_ID_NONE && ffmpeg.avcodec_find_decoder(id) != null;
+        }
+
+        /// <summary>
+        /// 当前 FFmpeg 构建是否真的带该编码器（AMR/Speex 编码器需第三方库，多数构建没有）
+        /// </summary>
+        public static unsafe bool HasEncoder(AudioCodec codec)
+        {
+            var id = ToCodecId(codec);
+            return id != AVCodecID.AV_CODEC_ID_NONE && ffmpeg.avcodec_find_encoder(id) != null;
+        }
+    }
+
     /// <summary>
     /// FFmpeg 音频解码器工厂
     /// </summary>
@@ -25,7 +59,8 @@ namespace Cyaim.RTSPClient.Codecs.FFmpeg.Audio
 
         public bool CanCreate(AudioCodec codec, bool preferHardware = true)
         {
-            return SupportedCodecs.Contains(codec) && FFmpegHelper.IsAvailable();
+            return SupportedCodecs.Contains(codec) && FFmpegHelper.IsAvailable()
+                && FFmpegAudioCodecProbe.HasDecoder(codec);
         }
 
         public IAudioDecoder Create(AudioCodec codec)
@@ -61,7 +96,8 @@ namespace Cyaim.RTSPClient.Codecs.FFmpeg.Audio
 
         public bool CanCreate(AudioCodec codec, bool preferHardware = true)
         {
-            return SupportedCodecs.Contains(codec) && FFmpegHelper.IsAvailable();
+            return SupportedCodecs.Contains(codec) && FFmpegHelper.IsAvailable()
+                && FFmpegAudioCodecProbe.HasEncoder(codec);
         }
 
         public IAudioEncoder Create(AudioCodec codec)

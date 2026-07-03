@@ -9,13 +9,24 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     
     <PackageId>Cyaim.RTSPClient.Codecs.FFmpeg.Audio</PackageId>
-    <Version>2.0.0</Version>
-    <Description>FFmpeg-based audio codecs for Cyaim.RTSPClient (AAC, Opus, AMR, Speex, Vorbis, MP3)</Description>
+    <Version>3.0.0</Version>
+    <Description>FFmpeg-based audio codecs for Cyaim.RTSPClient (AAC, Opus, AMR, Speex, Vorbis, MP3). Proper sample-format negotiation via libswresample; RTSP raw AAC via AudioDecoderConfig.ExtraData. Requires FFmpeg 7.x shared libraries at runtime.</Description>
     <Copyright>Cyaim Studio</Copyright>
     <PackageTags>ffmpeg;aac;opus;amr;speex;audio;codec;rtsp</PackageTags>
     <PackageProjectUrl>https://github.com/Cyaim/Cyaim.RTSPClient</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Cyaim/Cyaim.RTSPClient</RepositoryUrl>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <PackageReleaseNotes>v3.0：重写采样格式处理——解码经 libswresample 统一输出 16-bit 交织 PCM（修复 AAC 输出噪音）；编码按编码器支持格式协商 + AVAudioFifo 分帧（修复 AAC 编码器无法打开）；支持 RTSP 裸 AAC 的 AudioSpecificConfig（ExtraData）；修复悬垂指针；工厂按 FFmpeg 实际构建能力动态探测。</PackageReleaseNotes>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\LICENSE">
+      <Pack>True</Pack>
+      <PackagePath></PackagePath>
+    </None>
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="FFmpeg.AutoGen" Version="7.1.1" />
