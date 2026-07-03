@@ -55,9 +55,21 @@ jobs:
         dotnet pack Cyaim.RTSPClient.Codecs.FFmpeg.Video/Cyaim.RTSPClient.Codecs.FFmpeg.Video.csproj --configuration Release --no-build -p:PackageVersion=${{ steps.version.outputs.version }} --output ./nupkgs
         dotnet pack Cyaim.RTSPClient.Codecs.FFmpeg.Audio/Cyaim.RTSPClient.Codecs.FFmpeg.Audio.csproj --configuration Release --no-build -p:PackageVersion=${{ steps.version.outputs.version }} --output ./nupkgs
     
-    # 推送到NuGet.org
+    # 推送到NuGet.org（逐包推送：单个包失败不阻塞其余包，最后统一判定）
     - name: 推送到NuGet
-      run: dotnet nuget push ./nupkgs/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+      run: |
+        FAILED=""
+        for pkg in ./nupkgs/*.nupkg; do
+          echo "==> 推送 $pkg"
+          if ! dotnet nuget push "$pkg" --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate; then
+            echo "::error::$pkg 推送失败。若为首发的新包 ID，请检查 NUGET_API_KEY 的权限：需勾选 Push new packages and package versions，且 Glob Pattern 覆盖 Cyaim.*"
+            FAILED="$FAILED $pkg"
+          fi
+        done
+        if [ -n "$FAILED" ]; then
+          echo "以下包推送失败:$FAILED"
+          exit 1
+        fi
     
     # 创建Git Tag
     - name: 创建Tag
