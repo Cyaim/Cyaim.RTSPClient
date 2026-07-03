@@ -20,6 +20,8 @@
   <ItemGroup>
     <ProjectReference Include="..\Cyaim.RTSPClient\Cyaim.RTSPClient.csproj" />
     <ProjectReference Include="..\Cyaim.RTSPServer\Cyaim.RTSPServer.csproj" />
+    <ProjectReference Include="..\Cyaim.RTSPClient.Codecs.FFmpeg.Video\Cyaim.RTSPClient.Codecs.FFmpeg.Video.csproj" />
+    <ProjectReference Include="..\Cyaim.RTSPClient.Codecs.FFmpeg.Audio\Cyaim.RTSPClient.Codecs.FFmpeg.Audio.csproj" />
   </ItemGroup>
 
 </Project>

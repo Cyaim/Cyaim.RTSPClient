@@ -42,9 +42,18 @@ jobs:
     - name: 运行测试
       run: dotnet test Cyaim.RTSPClient.Tests/Cyaim.RTSPClient.Tests.csproj --configuration Release
     
-    # 打包
+    # 编译 FFmpeg 插件
+    - name: 编译FFmpeg插件
+      run: |
+        dotnet build Cyaim.RTSPClient.Codecs.FFmpeg.Video/Cyaim.RTSPClient.Codecs.FFmpeg.Video.csproj --configuration Release -p:Version=${{ steps.version.outputs.version }}
+        dotnet build Cyaim.RTSPClient.Codecs.FFmpeg.Audio/Cyaim.RTSPClient.Codecs.FFmpeg.Audio.csproj --configuration Release -p:Version=${{ steps.version.outputs.version }}
+
+    # 打包（主包 + FFmpeg 插件）
     - name: 打包NuGet
-      run: dotnet pack Cyaim.RTSPClient/Cyaim.RTSPClient.csproj --configuration Release --no-build -p:PackageVersion=${{ steps.version.outputs.version }} --output ./nupkgs
+      run: |
+        dotnet pack Cyaim.RTSPClient/Cyaim.RTSPClient.csproj --configuration Release --no-build -p:PackageVersion=${{ steps.version.outputs.version }} --output ./nupkgs
+        dotnet pack Cyaim.RTSPClient.Codecs.FFmpeg.Video/Cyaim.RTSPClient.Codecs.FFmpeg.Video.csproj --configuration Release --no-build -p:PackageVersion=${{ steps.version.outputs.version }} --output ./nupkgs
+        dotnet pack Cyaim.RTSPClient.Codecs.FFmpeg.Audio/Cyaim.RTSPClient.Codecs.FFmpeg.Audio.csproj --configuration Release --no-build -p:PackageVersion=${{ steps.version.outputs.version }} --output ./nupkgs
     
     # 推送到NuGet.org
     - name: 推送到NuGet
