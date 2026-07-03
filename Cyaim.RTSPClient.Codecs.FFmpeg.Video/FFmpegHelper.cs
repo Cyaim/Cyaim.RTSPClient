@@ -9,81 +9,106 @@ namespace Cyaim.RTSPClient.Codecs.FFmpeg.Video
     /// </summary>
     public static class FFmpegHelper
     {
-        private static bool _initialized;
+        private static readonly object _initLock = new();
+        private static volatile bool _initialized;
+        private static bool? _available;
 
         /// <summary>
-        /// 初始化 FFmpeg 库
+        /// 初始化 FFmpeg 库（线程安全，可重复调用）
         /// </summary>
         public static void Initialize()
         {
             if (_initialized) return;
 
-            // 设置 FFmpeg 库路径
-            ffmpeg.RootPath = GetFFmpegPath();
+            lock (_initLock)
+            {
+                if (_initialized) return;
 
-            // 设置日志级别
-            ffmpeg.av_log_set_level(ffmpeg.AV_LOG_WARNING);
+                // 只有真正找到含 FFmpeg 动态库的目录才设置 RootPath，
+                // 否则保持 FFmpeg.AutoGen 的默认加载策略（系统库路径 / PATH）
+                var path = ProbeFFmpegPath();
+                if (path != null)
+                    ffmpeg.RootPath = path;
 
-            _initialized = true;
+                // 首次 P/Invoke 触发原生库加载，失败会抛出（由 IsAvailable 捕获）
+                ffmpeg.av_log_set_level(ffmpeg.AV_LOG_WARNING);
+
+                _initialized = true;
+            }
         }
 
         /// <summary>
-        /// 获取 FFmpeg 库路径
+        /// 探测 FFmpeg 动态库目录。
+        /// 顺序：FFMPEG_PATH 环境变量 → 应用输出目录及其 ffmpeg 子目录 → 常见安装位置。
+        /// 目录必须真实包含 avcodec 动态库才算命中。
         /// </summary>
-        private static string GetFFmpegPath()
+        private static string? ProbeFFmpegPath()
         {
-            // 尝试从环境变量获取
-            var path = Environment.GetEnvironmentVariable("FFMPEG_PATH");
-            if (!string.IsNullOrEmpty(path) && System.IO.Directory.Exists(path))
-                return path;
+            var candidates = new System.Collections.Generic.List<string?>
+            {
+                Environment.GetEnvironmentVariable("FFMPEG_PATH"),
+                AppContext.BaseDirectory,
+                System.IO.Path.Combine(AppContext.BaseDirectory, "ffmpeg"),
+            };
 
-            // 默认路径
+            string libPattern;
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                // Windows: 检查常见位置
-                var candidates = new[]
-                {
-                    "ffmpeg",
-                    @"C:\ffmpeg\bin",
-                    @"C:\Program Files\ffmpeg\bin",
-                    System.IO.Path.Combine(AppContext.BaseDirectory, "ffmpeg")
-                };
-
-                foreach (var candidate in candidates)
-                {
-                    if (System.IO.Directory.Exists(candidate))
-                        return candidate;
-                }
-            }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-            {
-                // Linux: /usr/lib 或 /usr/local/lib
-                return "/usr/lib/x86_64-linux-gnu";
+                libPattern = "avcodec*.dll";
+                candidates.Add(System.IO.Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "native"));
+                candidates.Add(@"C:\ffmpeg\bin");
+                candidates.Add(@"C:\Program Files\ffmpeg\bin");
             }
             else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             {
-                // macOS: Homebrew
-                return "/usr/local/lib";
+                libPattern = "libavcodec*.dylib";
+                candidates.Add("/opt/homebrew/lib");
+                candidates.Add("/usr/local/lib");
+            }
+            else
+            {
+                libPattern = "libavcodec.so*";
+                candidates.Add("/usr/lib/x86_64-linux-gnu");
+                candidates.Add("/usr/local/lib");
+                candidates.Add("/usr/lib");
             }
 
-            return "ffmpeg";
+            foreach (var candidate in candidates)
+            {
+                try
+                {
+                    if (!string.IsNullOrEmpty(candidate) &&
+                        System.IO.Directory.Exists(candidate) &&
+                        System.IO.Directory.GetFiles(candidate, libPattern).Length > 0)
+                    {
+                        return candidate;
+                    }
+                }
+                catch { }
+            }
+
+            return null;
         }
 
         /// <summary>
-        /// 检查 FFmpeg 是否可用
+        /// 检查 FFmpeg 是否可用（结果缓存；原生库缺失/版本不匹配时返回 false 而不抛异常）
         /// </summary>
         public static bool IsAvailable()
         {
+            if (_available.HasValue)
+                return _available.Value;
+
             try
             {
                 Initialize();
                 var version = ffmpeg.av_version_info();
-                return !string.IsNullOrEmpty(version);
+                _available = !string.IsNullOrEmpty(version);
             }
             catch
             {
-                return false;
+                _available = false;
             }
+            return _available.Value;
         }
 
         /// <summary>

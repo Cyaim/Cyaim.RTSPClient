@@ -9,13 +9,24 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     
     <PackageId>Cyaim.RTSPClient.Codecs.FFmpeg.Video</PackageId>
-    <Version>2.0.0</Version>
-    <Description>FFmpeg-based video codecs for Cyaim.RTSPClient (H.264, H.265, VP8, VP9, MJPEG)</Description>
+    <Version>3.0.0</Version>
+    <Description>FFmpeg-based video codecs for Cyaim.RTSPClient (H.264, H.265, VP8, VP9, MJPEG). Hardware acceleration via NVDEC/NVENC, QSV, D3D11VA, VAAPI, VideoToolbox. Requires FFmpeg 7.x shared libraries at runtime (FFMPEG_PATH or app directory).</Description>
     <Copyright>Cyaim Studio</Copyright>
-    <PackageTags>ffmpeg;h264;h265;vp8;vp9;video;codec;rtsp</PackageTags>
+    <PackageTags>ffmpeg;h264;h265;vp8;vp9;video;codec;rtsp;hwaccel;nvdec;qsv</PackageTags>
     <PackageProjectUrl>https://github.com/Cyaim/Cyaim.RTSPClient</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Cyaim/Cyaim.RTSPClient</RepositoryUrl>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <PackageReleaseNotes>v3.0：修复单包多帧丢帧与 EAGAIN 返回 null 引发的 NRE；硬件解码 NV12 帧正确转换（不再崩溃）；支持 SDP 带外 SPS/PPS（VideoDecoderConfig.ExtraData）；pts 正确透传；sws_scale 兜底像素格式转换；流式编解码自动 EOF 排空。</PackageReleaseNotes>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\LICENSE">
+      <Pack>True</Pack>
+      <PackagePath></PackagePath>
+    </None>
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="FFmpeg.AutoGen" Version="7.1.1" />

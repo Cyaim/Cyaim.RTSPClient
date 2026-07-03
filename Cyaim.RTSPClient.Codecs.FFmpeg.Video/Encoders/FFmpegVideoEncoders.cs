@@ -147,7 +147,10 @@ namespace Cyaim.RTSPClient.Codecs.FFmpeg.Video.Encoders
             return Task.CompletedTask;
         }
 
-        public virtual Task<EncodedVideoFrame> EncodeAsync(VideoFrame input, CancellationToken ct = default)
+        private readonly Queue<EncodedVideoFrame> _pendingPackets = new();
+        private readonly Dictionary<long, long> _ptsToTimestamp = new();
+
+        public virtual Task<EncodedVideoFrame?> EncodeAsync(VideoFrame input, CancellationToken ct = default)
         {
             if (_state != ProcessorState.Ready)
                 throw new InvalidOperationException("Encoder not initialized");
@@ -165,44 +168,72 @@ namespace Cyaim.RTSPClient.Codecs.FFmpeg.Video.Encoders
                 if (_hwType != HardwareAccelerationType.None)
                 {
                     var uploadError = ffmpeg.av_hwframe_transfer_data(_hwFrame, _frame, 0);
-                    if (uploadError < 0)
-                        FFmpegHelper.CheckError(uploadError);
-                    _hwFrame->pts = _frameNumber;
+                    FFmpegHelper.CheckError(uploadError);
                     encodeFrame = _hwFrame;
                 }
-                else
-                {
-                    _frame->pts = _frameNumber;
-                }
 
-                _frameNumber++;
+                // pts=帧号；编码器输出包可能延迟（B 帧/前瞻），用映射把输入时间戳配回正确的输出包
+                long pts = _frameNumber++;
+                encodeFrame->pts = pts;
+                _ptsToTimestamp[pts] = input.Timestamp;
 
                 var error = ffmpeg.avcodec_send_frame(_codecCtx, encodeFrame);
-                FFmpegHelper.CheckError(error);
-
-                error = ffmpeg.avcodec_receive_packet(_codecCtx, _packet);
                 if (error == ffmpeg.AVERROR(ffmpeg.EAGAIN))
-                    return Task.FromResult<EncodedVideoFrame>(default);
+                {
+                    DrainEncodedPackets(input.Width, input.Height);
+                    error = ffmpeg.avcodec_send_frame(_codecCtx, encodeFrame);
+                }
                 FFmpegHelper.CheckError(error);
 
-                var data = new byte[_packet->size];
-                Marshal.Copy((IntPtr)_packet->data, data, 0, _packet->size);
-                var isKeyFrame = (_packet->flags & ffmpeg.AV_PKT_FLAG_KEY) != 0;
+                DrainEncodedPackets(input.Width, input.Height);
 
-                return Task.FromResult(new EncodedVideoFrame
-                {
-                    Data = data,
-                    Codec = SupportedCodecs[0],
-                    Timestamp = input.Timestamp,
-                    Type = isKeyFrame ? FrameType.IDR : FrameType.P,
-                    Width = input.Width,
-                    Height = input.Height
-                });
+                return Task.FromResult(_pendingPackets.Count > 0 ? _pendingPackets.Dequeue() : (EncodedVideoFrame?)null);
             }
             finally
             {
-                ffmpeg.av_packet_unref(_packet);
                 _state = ProcessorState.Ready;
+            }
+        }
+
+        /// <summary>
+        /// 取出编码器当前可输出的全部包到待输出队列
+        /// </summary>
+        private void DrainEncodedPackets(int width, int height)
+        {
+            while (true)
+            {
+                var error = ffmpeg.avcodec_receive_packet(_codecCtx, _packet);
+                if (error == ffmpeg.AVERROR(ffmpeg.EAGAIN) || error == ffmpeg.AVERROR_EOF)
+                    break;
+                FFmpegHelper.CheckError(error);
+
+                try
+                {
+                    var data = new byte[_packet->size];
+                    Marshal.Copy((IntPtr)_packet->data, data, 0, _packet->size);
+                    var isKeyFrame = (_packet->flags & ffmpeg.AV_PKT_FLAG_KEY) != 0;
+
+                    long timestamp = 0;
+                    if (_ptsToTimestamp.TryGetValue(_packet->pts, out var ts))
+                    {
+                        timestamp = ts;
+                        _ptsToTimestamp.Remove(_packet->pts);
+                    }
+
+                    _pendingPackets.Enqueue(new EncodedVideoFrame
+                    {
+                        Data = data,
+                        Codec = SupportedCodecs[0],
+                        Timestamp = timestamp,
+                        Type = isKeyFrame ? FrameType.IDR : FrameType.P,
+                        Width = width,
+                        Height = height
+                    });
+                }
+                finally
+                {
+                    ffmpeg.av_packet_unref(_packet);
+                }
             }
         }
 
@@ -210,12 +241,32 @@ namespace Cyaim.RTSPClient.Codecs.FFmpeg.Video.Encoders
             IAsyncEnumerable<VideoFrame> inputStream,
             [EnumeratorCancellation] CancellationToken ct = default)
         {
+            int lastWidth = 0, lastHeight = 0;
+
             await foreach (var frame in inputStream.WithCancellation(ct))
             {
+                lastWidth = frame.Width;
+                lastHeight = frame.Height;
+
                 var encoded = await EncodeAsync(frame, ct);
-                if (encoded.Data.Length > 0)
+                if (encoded != null)
                     yield return encoded;
+                while (_pendingPackets.Count > 0)
+                    yield return _pendingPackets.Dequeue();
             }
+
+            // 输入耗尽：flush 编码器，产出缓冲中的尾包
+            SendEofAndDrain(lastWidth, lastHeight);
+            while (_pendingPackets.Count > 0)
+                yield return _pendingPackets.Dequeue();
+        }
+
+        private void SendEofAndDrain(int width, int height)
+        {
+            if (_codecCtx == null)
+                return;
+            ffmpeg.avcodec_send_frame(_codecCtx, null);
+            DrainEncodedPackets(width, height);
         }
 
         public virtual Task FlushAsync(CancellationToken ct = default)
@@ -223,29 +274,45 @@ namespace Cyaim.RTSPClient.Codecs.FFmpeg.Video.Encoders
             if (_codecCtx != null)
             {
                 ffmpeg.avcodec_send_frame(_codecCtx, null);
-                while (ffmpeg.avcodec_receive_packet(_codecCtx, _packet) >= 0)
-                    ffmpeg.av_packet_unref(_packet);
+                DrainEncodedPackets(_codecCtx->width, _codecCtx->height);
             }
             return Task.CompletedTask;
         }
 
+        /// <summary>
+        /// 取出 Flush 后仍滞留在待输出队列中的包
+        /// </summary>
+        public EncodedVideoFrame? DequeuePendingPacket()
+        {
+            return _pendingPackets.Count > 0 ? _pendingPackets.Dequeue() : null;
+        }
+
         protected virtual void FillSoftwareFrame(VideoFrame input)
         {
+            var writableError = ffmpeg.av_frame_make_writable(_frame);
+            FFmpegHelper.CheckError(writableError);
+
             var data = input.Data.Span;
             int w = input.Width, h = input.Height;
             int ySize = w * h, uvSize = (w / 2) * (h / 2);
 
-            // Y
-            for (int y = 0; y < h; y++)
-                Marshal.Copy(data.Slice(y * w, w).ToArray(), 0, (IntPtr)(_frame->data[0] + y * _frame->linesize[0]), w);
+            if (data.Length < ySize + uvSize * 2)
+                throw new ArgumentException($"YUV420P frame data too small: {data.Length} < {ySize + uvSize * 2}");
 
-            // U
-            for (int y = 0; y < h / 2; y++)
-                Marshal.Copy(data.Slice(ySize + y * (w / 2), w / 2).ToArray(), 0, (IntPtr)(_frame->data[1] + y * _frame->linesize[1]), w / 2);
+            fixed (byte* pSrc = data)
+            {
+                CopyPlaneToFrame(pSrc, w, _frame->data[0], _frame->linesize[0], w, h);
+                CopyPlaneToFrame(pSrc + ySize, w / 2, _frame->data[1], _frame->linesize[1], w / 2, h / 2);
+                CopyPlaneToFrame(pSrc + ySize + uvSize, w / 2, _frame->data[2], _frame->linesize[2], w / 2, h / 2);
+            }
+        }
 
-            // V
-            for (int y = 0; y < h / 2; y++)
-                Marshal.Copy(data.Slice(ySize + uvSize + y * (w / 2), w / 2).ToArray(), 0, (IntPtr)(_frame->data[2] + y * _frame->linesize[2]), w / 2);
+        private static void CopyPlaneToFrame(byte* src, int srcStride, byte* dst, int dstStride, int rowBytes, int rows)
+        {
+            for (int y = 0; y < rows; y++)
+            {
+                Buffer.MemoryCopy(src + (long)y * srcStride, dst + (long)y * dstStride, rowBytes, rowBytes);
+            }
         }
 
         protected abstract AVCodecID GetCodecId(VideoCodec codec);
