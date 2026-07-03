@@ -9,9 +9,10 @@
     <PackageProjectUrl>https://github.com/Cyaim/Cyaim.RTSPClient</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Cyaim/Cyaim.RTSPClient</RepositoryUrl>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
-    <AssemblyVersion>2.0.0.0</AssemblyVersion>
-    <FileVersion>2.0.0.0</FileVersion>
-    <Version>2.0.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <Version>3.0.0</Version>
+    <PackageReleaseNotes>v3.0 可靠性/性能大修：自动保活与自动重连（完整恢复SETUP/PLAY）、RTCP RR/SR、Digest qop=auth/SHA-256/Basic、FU大帧与丢包缺口修复、SDP参数集注入、零拷贝接收路径、G.711 AVX2 SIMD（~14x）、UDP单播拉流+乱序重排、StartAsync一键拉流Facade、IAsyncDisposable。升级指南见 docs/Migration-v3.md。</PackageReleaseNotes>
     <PackageTags>rtsp;rtp;rtcp;h264;h265;onvif;ip-camera;streaming</PackageTags>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>

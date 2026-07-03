@@ -22,11 +22,11 @@ jobs:
       with:
         dotnet-version: '10.0.x'
     
-    # 生成版本号: 2.YY.MMdd.hhmm
+    # 生成版本号: 3.YY.MMdd.hhmm
     - name: 生成版本号
       id: version
       run: |
-        VERSION="2.$(date -u +'%y.%m%d.%H%M')"
+        VERSION="3.$(date -u +'%y.%m%d.%H%M')"
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "生成版本号: $VERSION"
     
