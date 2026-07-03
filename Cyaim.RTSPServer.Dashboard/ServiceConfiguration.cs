@@ -51,7 +51,8 @@ public static class ServiceConfiguration
                         Width = 1920,
                         Height = 1080,
                         Framerate = 25,
-                        EnableAudio = false
+                        EnableAudio = true,
+                        AudioCodec = AudioCodecType.AAC  // 实际编码/采样率由文件解析自动更新
                     });
                 });
 
