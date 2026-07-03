@@ -2207,10 +2207,17 @@ public class TestPatternMediaSource : IMediaSource
 
     public IAsyncEnumerable<RtpPacket> GetPacketsAsync(CancellationToken ct)
     {
+        // 未启动时返回空流而不是抛异常（PLAY 层已用 455 拦截未启动的流）
         var broadcaster = _broadcaster;
         if (broadcaster == null)
-            throw new InvalidOperationException("Media source not started");
+            return EmptyPackets();
         return broadcaster.SubscribeAsync(ct);
+    }
+
+    private static async IAsyncEnumerable<RtpPacket> EmptyPackets()
+    {
+        await Task.CompletedTask;
+        yield break;
     }
 
     /// <summary>
@@ -2524,10 +2531,17 @@ public class CameraMediaSource : IMediaSource
 
     public IAsyncEnumerable<RtpPacket> GetPacketsAsync(CancellationToken ct)
     {
+        // 未启动时返回空流而不是抛异常（PLAY 层已用 455 拦截未启动的流）
         var broadcaster = _broadcaster;
         if (broadcaster == null)
-            throw new InvalidOperationException("Media source not started");
+            return EmptyPackets();
         return broadcaster.SubscribeAsync(ct);
+    }
+
+    private static async IAsyncEnumerable<RtpPacket> EmptyPackets()
+    {
+        await Task.CompletedTask;
+        yield break;
     }
 
     private async Task ProduceAsync(CancellationToken ct)
@@ -2697,10 +2711,17 @@ public class ScreenCaptureMediaSource : IMediaSource
 
     public IAsyncEnumerable<RtpPacket> GetPacketsAsync(CancellationToken ct)
     {
+        // 未启动时返回空流而不是抛异常（PLAY 层已用 455 拦截未启动的流）
         var broadcaster = _broadcaster;
         if (broadcaster == null)
-            throw new InvalidOperationException("Media source not started");
+            return EmptyPackets();
         return broadcaster.SubscribeAsync(ct);
+    }
+
+    private static async IAsyncEnumerable<RtpPacket> EmptyPackets()
+    {
+        await Task.CompletedTask;
+        yield break;
     }
 
     private async Task ProduceAsync(CancellationToken ct)

@@ -490,6 +490,14 @@ public sealed class RtspSession : IDisposable
 
     private RtspResponse HandlePlay(RtspRequest request)
     {
+        // 媒体源未启动时返回 455：客户端（尤其自动重连）可据此重试，
+        // 而不是拿到 200 却永远收不到数据
+        var playStreamInfo = _streamManager.GetStream(_currentStreamPath);
+        if (playStreamInfo is { IsRunning: false })
+        {
+            return CreateResponse(request.CSeq, 455, "Method Not Valid in This State");
+        }
+
         _state = RtspSessionState.Playing;
 
         // 统计活跃客户端
