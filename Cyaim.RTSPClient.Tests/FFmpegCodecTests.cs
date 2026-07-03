@@ -138,6 +138,118 @@ public class FFmpegCodecTests
         Assert.Equal(240, frame.Height);
     }
 
+    [Fact]
+    public async Task 硬件加速解码_自动选择并正确输出()
+    {
+        if (!FFmpegAvailable) return;
+        if (FFmpegHardwareHelper.GetSupportedTypes().Count == 0) return; // 无硬件环境跳过
+
+        const int width = 640, height = 480, frameCount = 20;
+
+        // 软件编码生成码流
+        using var encoder = new H264Encoder();
+        await encoder.InitializeAsync(new VideoEncoderConfig
+        {
+            Codec = VideoCodec.H264, Width = width, Height = height, Framerate = 25,
+            Bitrate = 800_000, GopSize = 10, EnableHardwareAcceleration = false, Preset = "ultrafast"
+        });
+        var packets = new List<EncodedVideoFrame>();
+        for (int i = 0; i < frameCount; i++)
+        {
+            var pkt = await encoder.EncodeAsync(MakeYuvFrame(width, height, i));
+            if (pkt != null) packets.Add(pkt);
+            while (encoder.DequeuePendingPacket() is { } e) packets.Add(e);
+        }
+        await encoder.FlushAsync();
+        while (encoder.DequeuePendingPacket() is { } t) packets.Add(t);
+
+        // 硬件解码（自动选择；硬件初始化失败时会自动回退软件，同样必须能解）
+        using var decoder = new H264Decoder();
+        await decoder.InitializeAsync(new VideoDecoderConfig
+        {
+            Codec = VideoCodec.H264, Width = width, Height = height, EnableHardwareAcceleration = true
+        });
+
+        int frames = 0;
+        foreach (var pkt in packets)
+        {
+            if (await decoder.DecodeAsync(pkt) is { } f) { Assert.Equal(width, f.Width); frames++; }
+            while (decoder.DequeuePendingFrame() is { } x) frames++;
+        }
+        await decoder.FlushAsync();
+        while (decoder.DequeuePendingFrame() is { } x) frames++;
+
+        Assert.True(frames >= frameCount - 2, $"硬件路径解出 {frames}/{packets.Count} 帧");
+        Assert.Equal(0, decoder.DecodeErrorCount);
+    }
+
+    [Fact]
+    public async Task B帧流_多帧重排与时间戳单调()
+    {
+        if (!FFmpegAvailable) return;
+
+        const int total = 40;
+        using var encoder = new H264Encoder();
+        await encoder.InitializeAsync(new VideoEncoderConfig
+        {
+            Codec = VideoCodec.H264, Width = 320, Height = 240, Framerate = 25,
+            Bitrate = 400_000, GopSize = 25, BFrames = 2, EnableHardwareAcceleration = false, Preset = "fast"
+        });
+
+        var packets = new List<EncodedVideoFrame>();
+        for (int i = 0; i < total; i++)
+        {
+            var pkt = await encoder.EncodeAsync(MakeYuvFrame(320, 240, i));
+            if (pkt != null) packets.Add(pkt);
+            while (encoder.DequeuePendingPacket() is { } e) packets.Add(e);
+        }
+        await encoder.FlushAsync();
+        while (encoder.DequeuePendingPacket() is { } t) packets.Add(t);
+
+        using var decoder = new H264Decoder();
+        await decoder.InitializeAsync(new VideoDecoderConfig { Codec = VideoCodec.H264, EnableHardwareAcceleration = false });
+
+        var timestamps = new List<long>();
+        foreach (var pkt in packets)
+        {
+            if (await decoder.DecodeAsync(pkt) is { } f) timestamps.Add(f.Timestamp);
+            while (decoder.DequeuePendingFrame() is { } x) timestamps.Add(x.Timestamp);
+        }
+        await decoder.FlushAsync();
+        while (decoder.DequeuePendingFrame() is { } x) timestamps.Add(x.Timestamp);
+
+        Assert.True(timestamps.Count >= total - 2, $"B 帧流解出 {timestamps.Count}/{total} 帧");
+        for (int i = 1; i < timestamps.Count; i++)
+            Assert.True(timestamps[i] > timestamps[i - 1],
+                $"时间戳必须单调递增（B 帧重排后按显示顺序输出）：ts[{i - 1}]={timestamps[i - 1]}, ts[{i}]={timestamps[i]}");
+    }
+
+    [Fact]
+    public async Task RtspVideoDecoderBridge_MediaFrame序列端到端解码()
+    {
+        if (!FFmpegAvailable) return;
+
+        using var bridge = new RtspVideoDecoderBridge(VideoCodec.H264, enableHardwareAcceleration: false);
+
+        // 模拟 GetMediaFrameReader 输出：SPS/PPS/IDR 同时间戳（IDR 带 marker）+ 24 个 P 帧
+        var nals = new List<Rtp.MediaFrame>
+        {
+            new(H264TestStream.Sps, 0, true, StreamType.Video, 0, false),
+            new(H264TestStream.Pps, 0, true, StreamType.Video, 0, false),
+            new(H264TestStream.IdrFrame, 0, true, StreamType.Video, 0, true),
+        };
+        for (int i = 1; i <= 24; i++)
+            nals.Add(new(H264TestStream.BuildPFrame(i % 16), (uint)(i * 3600), false, StreamType.Video, 0, true));
+
+        int frames = 0;
+        foreach (var nal in nals)
+            frames += (await bridge.FeedAsync(nal)).Count;
+        frames += (await bridge.FlushAsync()).Count;
+
+        Assert.Equal(25, frames);   // 1 IDR + 24 P，逐帧解出
+        Assert.Equal(0, bridge.Decoder.DecodeErrorCount);
+    }
+
     // ---------- 音频 ----------
 
     [Fact]

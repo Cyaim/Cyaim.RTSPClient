@@ -207,6 +207,38 @@ var decoder = CodecFactory.Instance.CreateVideoDecoder(new VideoDecoderConfig
 // 自动回退：硬件不可用时使用软件解码
 ```
 
+### RTSP 拉流直接解码（推荐：RtspVideoDecoderBridge）
+
+RTSP 解包器输出的 `MediaFrame` 是不带起始码的单个 NAL，而 FFmpeg 解码器要求按完整访问单元
+（一帧的全部 NAL 拼 Annex-B）投喂——直接把 `MediaFrame.Data` 喂给解码器会报
+`No start code is found`。`RtspVideoDecoderBridge` 按 `IsAccessUnitEnd`（RTP marker）
+与时间戳变化自动聚合 NAL 为访问单元，一行代码把拉流接到解码：
+
+```csharp
+using Cyaim.RTSPClient.Codecs.FFmpeg.Video;
+
+await using var session = new RTSPSession(config);
+await session.StartAsync();
+
+using var bridge = new RtspVideoDecoderBridge(VideoCodec.H264);  // 默认启用硬件加速
+
+var nals = session.GetMediaFrameReader(trackId: 0);
+while (await nals.WaitToReadAsync())
+{
+    while (nals.TryRead(out var nal))
+    {
+        foreach (var frame in await bridge.FeedAsync(nal))
+        {
+            // frame: YUV420P 或 NV12（见 frame.Format），时间戳为 RTP 时间戳
+            Render(frame);
+        }
+    }
+}
+
+foreach (var frame in await bridge.FlushAsync())   // 流结束排空尾帧
+    Render(frame);
+```
+
 ### 使用示例
 
 #### 注册 FFmpeg 编解码器

@@ -177,35 +177,85 @@ namespace Cyaim.RTSPClient.Codecs.FFmpeg.Video.Decoders
         }
 
         /// <summary>
-        /// 发送一个 packet（EAGAIN 时先取出已解码帧再重发）
+        /// 发送一个 packet（EAGAIN 时先取出已解码帧再重发）。
+        /// H.264/H.265 输入若为裸 NAL（RTSP 解包器 MediaFrame 的形态，无起始码），
+        /// 自动补 Annex-B 起始码——FFmpeg 解码器要求起始码分隔的码流。
         /// </summary>
         private void SendPacket(EncodedVideoFrame input)
         {
-            var data = input.Data;
-            fixed (byte* pData = data.Span)
+            var span = input.Data.Span;
+            bool needStartCode = NeedsAnnexBStartCode(span, input.Codec);
+
+            byte[]? rented = null;
+            try
             {
-                _packet->data = pData;
-                _packet->size = data.Length;
-                _packet->pts = input.Timestamp;
-                _packet->dts = ffmpeg.AV_NOPTS_VALUE;
-
-                var error = ffmpeg.avcodec_send_packet(_codecCtx, _packet);
-                if (error == ffmpeg.AVERROR(ffmpeg.EAGAIN))
+                ReadOnlySpan<byte> payload;
+                if (needStartCode)
                 {
-                    // 解码器输出缓冲满：先 drain 再重发
-                    DrainDecodedFrames();
-                    error = ffmpeg.avcodec_send_packet(_codecCtx, _packet);
+                    rented = System.Buffers.ArrayPool<byte>.Shared.Rent(span.Length + 4);
+                    rented[0] = 0; rented[1] = 0; rented[2] = 0; rented[3] = 1;
+                    span.CopyTo(rented.AsSpan(4));
+                    payload = rented.AsSpan(0, span.Length + 4);
                 }
-                FFmpegHelper.CheckError(error);
-            }
+                else
+                {
+                    payload = span;
+                }
 
-            // packet 数据已被解码器内部复制/引用，复位裸指针避免悬垂
-            _packet->data = null;
-            _packet->size = 0;
+                fixed (byte* pData = payload)
+                {
+                    _packet->data = pData;
+                    _packet->size = payload.Length;
+                    _packet->pts = input.Timestamp;
+                    _packet->dts = ffmpeg.AV_NOPTS_VALUE;
+
+                    var error = ffmpeg.avcodec_send_packet(_codecCtx, _packet);
+                    if (error == ffmpeg.AVERROR(ffmpeg.EAGAIN))
+                    {
+                        // 解码器输出缓冲满：先 drain 再重发
+                        DrainDecodedFrames();
+                        error = ffmpeg.avcodec_send_packet(_codecCtx, _packet);
+                    }
+                    FFmpegHelper.CheckError(error);
+                }
+            }
+            finally
+            {
+                if (rented != null)
+                    System.Buffers.ArrayPool<byte>.Shared.Return(rented);
+
+                // packet 数据已被解码器内部复制/引用，复位裸指针避免悬垂
+                _packet->data = null;
+                _packet->size = 0;
+            }
         }
 
         /// <summary>
-        /// 取出解码器当前可输出的全部帧到待输出队列
+        /// H.264/H.265 数据缺少 Annex-B 起始码时返回 true
+        /// </summary>
+        private static bool NeedsAnnexBStartCode(ReadOnlySpan<byte> data, VideoCodec codec)
+        {
+            if (codec != VideoCodec.H264 && codec != VideoCodec.H265)
+                return false;
+            if (data.Length < 4)
+                return false;
+
+            // 00 00 01 或 00 00 00 01 开头则已是 Annex-B
+            if (data[0] == 0 && data[1] == 0 && (data[2] == 1 || (data[2] == 0 && data[3] == 1)))
+                return false;
+
+            return true;
+        }
+
+        /// <summary>
+        /// 累计解码错误数（坏帧被跳过而不是终止会话，网络流丢包场景常见）
+        /// </summary>
+        public long DecodeErrorCount { get; private set; }
+
+        /// <summary>
+        /// 取出解码器当前可输出的全部帧到待输出队列。
+        /// 解码数据错误（如损坏帧）计数后跳过，不向调用方抛异常——
+        /// 尤其 Flush 时残留的坏数据不应炸掉调用方。
         /// </summary>
         private void DrainDecodedFrames()
         {
@@ -214,7 +264,11 @@ namespace Cyaim.RTSPClient.Codecs.FFmpeg.Video.Decoders
                 var error = ffmpeg.avcodec_receive_frame(_codecCtx, _frame);
                 if (error == ffmpeg.AVERROR(ffmpeg.EAGAIN) || error == ffmpeg.AVERROR_EOF)
                     break;
-                FFmpegHelper.CheckError(error);
+                if (error < 0)
+                {
+                    DecodeErrorCount++;
+                    break;
+                }
 
                 try
                 {
