@@ -21,6 +21,14 @@
 - **修复**：`avcodec_fill_audio_frame` 悬垂指针（fixed 作用域外使用输入内存）
 - **修复**：工厂 `CanCreate` 按 FFmpeg 实际构建能力动态探测（Speex/AMR 编码器多数构建没有，不再谎报后在 Initialize 抛异常）
 
+### 验证轮补充（同日）
+
+- **新增 `RtspVideoDecoderBridge`**：RTSP 解包的单 NAL（无起始码）按 RTP marker/时间戳自动聚合为访问单元再解码，`GetMediaFrameReader` 输出可直接接 FFmpeg 解码
+- **修复**：硬件编码从未工作（设置 AV_PIX_FMT_QSV 却无 hw_frames_ctx，QSV 打开报 Internal bug）→ 系统内存帧模式（NV12/YUV420P 协商，YUV420P 自动交织 NV12），失败自动回退软件；H.265 QSV 实测 20/20 帧
+- **修复**：解码 drain 对坏数据计数跳过（`DecodeErrorCount`）不再抛给调用方（Flush 不再炸）
+- 实测覆盖扩展：QSV 硬解/硬编、B 帧重排时间戳单调、VP8/VP9/MJPEG、视频 ExtraData、1080p/4K；测试增至 40 项
+- 未覆盖项与补齐路径见 docs/Verification-Plan.md
+
 ### 基础设施
 
 - `FFmpegHelper`：线程安全初始化、可用性缓存、库目录探测要求真实存在 avcodec 动态库（FFMPEG_PATH → 应用目录 → 常见位置）

@@ -9,4 +9,5 @@
 - **[API Reference / API 参考](API-Reference)**
 - **[Examples / 示例](Examples)**
 - **[Migration v3 / 升级指南](Migration-v3)**
+- **[Verification Plan / 验证计划](Verification-Plan)**
 - **[FAQ / 常见问题](FAQ)**

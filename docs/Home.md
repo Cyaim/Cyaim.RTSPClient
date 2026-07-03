@@ -22,6 +22,7 @@
 | [API Reference / API 参考](API-Reference) | 完整 API 文档 |
 | [Examples / 示例](Examples) | 更多示例代码 |
 | [Migration v3 / 升级指南](Migration-v3) | v2 → v3 行为与 API 变化 |
+| [Verification Plan / 验证计划](Verification-Plan) | 测试覆盖矩阵与未覆盖项补齐计划 |
 | [FAQ / 常见问题](FAQ) | 常见问题解答 |
 
 ### 系统要求
@@ -49,6 +50,7 @@ Welcome to the Cyaim.RTSPClient documentation!
 | [API Reference](API-Reference) | Complete API documentation |
 | [Examples](Examples) | More code examples |
 | [Migration v3](Migration-v3) | v2 → v3 behavioral & API changes |
+| [Verification Plan](Verification-Plan) | Test coverage matrix and gap-closing plan |
 | [FAQ](FAQ) | Frequently asked questions |
 
 ### Requirements
