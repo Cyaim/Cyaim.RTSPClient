@@ -57,6 +57,21 @@ namespace Cyaim.RTSPClient.Media
         public byte[]? H264Pps { get; set; }
 
         /// <summary>
+        /// H.265 VPS (从sprop-vps解析)
+        /// </summary>
+        public byte[]? H265Vps { get; set; }
+
+        /// <summary>
+        /// H.265 SPS (从sprop-sps解析)
+        /// </summary>
+        public byte[]? H265Sps { get; set; }
+
+        /// <summary>
+        /// H.265 PPS (从sprop-pps解析)
+        /// </summary>
+        public byte[]? H265Pps { get; set; }
+
+        /// <summary>
         /// 从rtpmap行解析编码信息
         /// 格式: "a=rtpmap:96 H264/90000" 或 "a=rtpmap:8 PCMA/16000/1"
         /// </summary>
@@ -120,10 +135,14 @@ namespace Cyaim.RTSPClient.Media
                 FmtpParameters[key] = value;
             }
 
-            // 解析H.264特定参数
+            // 解析H.264/H.265特定参数
             if (VideoCodec == VideoCodec.H264)
             {
                 ParseH264Parameters();
+            }
+            else if (VideoCodec == VideoCodec.H265)
+            {
+                ParseH265Parameters();
             }
         }
 
@@ -134,12 +153,37 @@ namespace Cyaim.RTSPClient.Media
                 string[] parts = sps.Split(',');
                 if (parts.Length >= 1)
                 {
-                    H264Sps = System.Convert.FromBase64String(parts[0]);
+                    H264Sps = TryFromBase64(parts[0]);
                 }
                 if (parts.Length >= 2)
                 {
-                    H264Pps = System.Convert.FromBase64String(parts[1]);
+                    H264Pps = TryFromBase64(parts[1]);
                 }
+            }
+        }
+
+        private void ParseH265Parameters()
+        {
+            if (FmtpParameters.TryGetValue("sprop-vps", out string? vps) && vps != null)
+                H265Vps = TryFromBase64(vps);
+            if (FmtpParameters.TryGetValue("sprop-sps", out string? sps) && sps != null)
+                H265Sps = TryFromBase64(sps);
+            if (FmtpParameters.TryGetValue("sprop-pps", out string? pps) && pps != null)
+                H265Pps = TryFromBase64(pps);
+        }
+
+        /// <summary>
+        /// 容错的 base64 解码：单台相机的畸形参数集不应让整个 DESCRIBE 失败
+        /// </summary>
+        private static byte[]? TryFromBase64(string value)
+        {
+            try
+            {
+                return System.Convert.FromBase64String(value.Trim());
+            }
+            catch (System.FormatException)
+            {
+                return null;
             }
         }
 

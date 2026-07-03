@@ -240,6 +240,35 @@ namespace Cyaim.RTSPClient.Media
                 }
             }
 
+            // 静态载荷类型（PCMU=0、PCMA=8、G722=9 等）允许省略 rtpmap，
+            // 从 m= 行的格式号合成编码信息，否则合法的 G.711 轨会拿不到编码
+            foreach (var format in media.Formats)
+            {
+                if (!int.TryParse(format, out int pt) || media.Codecs.ContainsKey(pt))
+                    continue;
+
+                var audioCodec = Common.RTPPayloadTypeHelper.GetAudioCodec(pt);
+                var videoCodec = Common.RTPPayloadTypeHelper.GetVideoCodec(pt);
+                if (audioCodec == AudioCodec.Unknown && videoCodec == VideoCodec.Unknown)
+                    continue;
+
+                media.Codecs[pt] = new CodecInfo
+                {
+                    PayloadType = pt,
+                    AudioCodec = audioCodec,
+                    VideoCodec = videoCodec,
+                    EncodingName = audioCodec != AudioCodec.Unknown ? audioCodec.ToString() : videoCodec.ToString(),
+                    // RFC 3551：静态音频载荷默认 8000Hz（G.711/G.722 时钟均为 8000），L16 除外
+                    ClockRate = audioCodec switch
+                    {
+                        AudioCodec.L16_STEREO or AudioCodec.L16_MONO => 44100,
+                        AudioCodec.Unknown => 90000,
+                        _ => 8000
+                    },
+                    Channels = audioCodec == AudioCodec.L16_STEREO ? 2 : 1
+                };
+            }
+
             // 解析 fmtp
             foreach (var attr in media.Attributes.Where(a => a.Name == "fmtp"))
             {

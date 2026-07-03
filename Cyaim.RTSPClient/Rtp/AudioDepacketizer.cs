@@ -24,16 +24,17 @@ namespace Cyaim.RTSPClient.Rtp
         /// </summary>
         public IEnumerable<MediaFrame> Feed(RTPPacket packet)
         {
-            if (packet.Payload == null || packet.Payload.Length == 0)
+            if (packet.PayloadSegment.Count == 0)
                 yield break;
 
-            // 音频通常不需要分片，直接返回
+            // 音频通常不需要分片，直接返回（Payload 访问会实体化一份拷贝，帧数据需外泄给消费者）
             yield return new MediaFrame(
                 packet.Payload,
                 packet.Timestamp,
                 false, // 音频没有关键帧概念
                 StreamType.Audio,
-                packet.TrackId
+                packet.TrackId,
+                packet.Marker
             );
         }
 

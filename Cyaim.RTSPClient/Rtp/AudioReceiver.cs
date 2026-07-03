@@ -64,7 +64,25 @@ namespace Cyaim.RTSPClient.Rtp
         {
             if (!IsReceiving) return;
             _cts?.Cancel();
-            _receiveTask?.Wait(TimeSpan.FromSeconds(5));
+            try { _receiveTask?.Wait(TimeSpan.FromSeconds(5)); }
+            catch (AggregateException) { }
+            _frameChannel?.Writer.TryComplete();
+            IsReceiving = false;
+        }
+
+        /// <summary>
+        /// 异步停止接收（不阻塞调用线程）
+        /// </summary>
+        public async Task StopReceivingAsync()
+        {
+            if (!IsReceiving) return;
+            _cts?.Cancel();
+            var task = _receiveTask;
+            if (task != null)
+            {
+                try { await Task.WhenAny(task, Task.Delay(5000)).ConfigureAwait(false); }
+                catch { }
+            }
             _frameChannel?.Writer.TryComplete();
             IsReceiving = false;
         }
@@ -85,8 +103,11 @@ namespace Cyaim.RTSPClient.Rtp
                         foreach (var frame in _depacketizer.Feed(packet))
                         {
                             FrameCount++;
-                            await _frameChannel!.Writer.WriteAsync(frame, ct);
-                            FrameReceived?.Invoke(this, new AudioFrameEventArgs(frame));
+                            await _frameChannel!.Writer.WriteAsync(frame, ct).ConfigureAwait(false);
+
+                            // 事件处理器异常不允许终止接收循环
+                            try { FrameReceived?.Invoke(this, new AudioFrameEventArgs(frame)); }
+                            catch { }
                         }
                     }
                 }

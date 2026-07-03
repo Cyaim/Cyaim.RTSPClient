@@ -137,17 +137,10 @@ namespace Cyaim.RTSPClient.Rtp
             if (payloadLength < 0)
                 payloadLength = 0;
 
-            // Extract payload into a new array
-            byte[] payload;
-            if (payloadLength > 0)
-            {
-                payload = new byte[payloadLength];
-                Array.Copy(data, payloadOffset, payload, 0, payloadLength);
-            }
-            else
-            {
-                payload = Array.Empty<byte>();
-            }
+            // 零拷贝：载荷直接切片原始数组（旧实现每包额外分配+拷贝一次载荷）
+            var payloadSegment = payloadLength > 0
+                ? new ArraySegment<byte>(data, payloadOffset, payloadLength)
+                : new ArraySegment<byte>(Array.Empty<byte>());
 
             return new RTPPacket(
                 version: version,
@@ -160,7 +153,7 @@ namespace Cyaim.RTSPClient.Rtp
                 timestamp: timestamp,
                 ssrc: ssrc,
                 csrc: csrc,
-                payload: payload,
+                payloadSegment: payloadSegment,
                 trackId: trackId,
                 streamType: streamType,
                 raw: data);

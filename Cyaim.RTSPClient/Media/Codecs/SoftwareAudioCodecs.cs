@@ -28,12 +28,14 @@ namespace Cyaim.RTSPClient.Media.Codecs
         {
             var encoded = input.Data.Span;
             var pcm = new byte[encoded.Length * 2];
-            for (int i = 0; i < encoded.Length; i++)
-            {
-                short sample = _codec == AudioCodec.PCMA ? AlawToLinear(encoded[i]) : UlawToLinear(encoded[i]);
-                pcm[i * 2] = (byte)(sample & 0xFF);
-                pcm[i * 2 + 1] = (byte)(sample >> 8);
-            }
+            var pcmShorts = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(pcm.AsSpan());
+
+            // 查表解码（G711Fast），比逐样本分支运算快约一个数量级
+            if (_codec == AudioCodec.PCMA)
+                Common.G711Fast.DecodeALaw(encoded, pcmShorts);
+            else
+                Common.G711Fast.DecodeMuLaw(encoded, pcmShorts);
+
             return Task.FromResult(new AudioFrame { Data = pcm, SampleRate = input.SampleRate, Channels = input.Channels, BitsPerSample = 16, Timestamp = input.Timestamp });
         }
 
@@ -44,19 +46,6 @@ namespace Cyaim.RTSPClient.Media.Codecs
 
         public Task FlushAsync(CancellationToken ct = default) => Task.CompletedTask;
         public void Dispose() => State = ProcessorState.Disposed;
-
-        private static short AlawToLinear(byte a)
-        {
-            a ^= 0x55; int t = (a & 0x7F) << 4; int seg = (a & 0x70) >> 4;
-            switch (seg) { case 0: t += 8; break; case 1: t += 0x108; break; default: t += 0x108; t <<= seg - 1; break; }
-            return (short)((a & 0x80) != 0 ? t : -t);
-        }
-
-        private static short UlawToLinear(byte u)
-        {
-            u = (byte)~u; int t = ((u & 0x0F) << 3) + 0x84; t <<= (u & 0x70) >> 4;
-            return (short)((u & 0x80) != 0 ? (0x84 - t) : (t - 0x84));
-        }
     }
 
     internal sealed class G711Encoder : IAudioEncoder
@@ -74,12 +63,16 @@ namespace Cyaim.RTSPClient.Media.Codecs
         public Task<EncodedAudioFrame> EncodeAsync(AudioFrame input, CancellationToken ct = default)
         {
             var pcm = input.Data.Span;
-            var encoded = new byte[pcm.Length / 2];
-            for (int i = 0; i < encoded.Length; i++)
-            {
-                short sample = (short)(pcm[i * 2] | (pcm[i * 2 + 1] << 8));
-                encoded[i] = _codec == AudioCodec.PCMA ? LinearToAlaw(sample) : LinearToUlaw(sample);
-            }
+            var pcmShorts = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(pcm);
+            var encoded = new byte[pcmShorts.Length];
+
+            // G711Fast：x86 AVX2 下向量化（16 样本/迭代），其余平台无分支查表标量。
+            // 注：旧实现在 [256,511] 区间的段位编码不符合 G.711 标准，此处已按标准修正。
+            if (_codec == AudioCodec.PCMA)
+                Common.G711Fast.EncodeALaw(pcmShorts, encoded);
+            else
+                Common.G711Fast.EncodeMuLaw(pcmShorts, encoded);
+
             return Task.FromResult(new EncodedAudioFrame { Data = encoded, Codec = _codec, SampleRate = input.SampleRate, Channels = input.Channels, Timestamp = input.Timestamp, Duration = input.Duration });
         }
 
@@ -90,22 +83,6 @@ namespace Cyaim.RTSPClient.Media.Codecs
 
         public Task FlushAsync(CancellationToken ct = default) => Task.CompletedTask;
         public void Dispose() => State = ProcessorState.Disposed;
-
-        private static byte LinearToAlaw(short s)
-        {
-            int mask = s >> 8 & 0x80; if (mask != 0) s = (short)-s; if (s > 32635) s = 32635;
-            int seg = 0; if (s >= 256) { for (int i = 7; i > 0; i--) { if (s >= (256 << i)) { seg = i + 1; break; } } }
-            byte aval = (byte)(seg << 4); if (seg >= 2) aval |= (byte)((s >> (seg + 3)) & 0x0F); else aval |= (byte)((s >> 4) & 0x0F);
-            return (byte)(aval ^ (byte)(mask ^ 0xD5));
-        }
-
-        private static byte LinearToUlaw(short s)
-        {
-            const int BIAS = 0x84, CLIP = 32635; int sign = 0;
-            if (s < 0) { sign = 0x80; s = (short)-s; } if (s > CLIP) s = CLIP; s += BIAS;
-            int seg = 0; for (int i = 7; i > 0; i--) { if (s >= (256 << i)) { seg = i + 1; break; } }
-            byte uval = (byte)(seg << 4 | ((s >> (seg + 3)) & 0x0F)); return (byte)((uval | sign) ^ 0xFF);
-        }
     }
 
     #endregion

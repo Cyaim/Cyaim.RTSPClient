@@ -44,6 +44,30 @@ namespace Cyaim.RTSPClient.Rtp
             int trackId,
             StreamType streamType,
             byte[] raw)
+            : this(version, padding, extension, csrcCount, marker, payloadType, sequenceNumber, timestamp,
+                   ssrc, csrc, new ArraySegment<byte>(payload ?? Array.Empty<byte>()), trackId, streamType, raw)
+        {
+        }
+
+        /// <summary>
+        /// 零拷贝构造：载荷以 <see cref="ArraySegment{T}"/> 形式直接切片原始包数据，
+        /// 热路径上避免为每个包再分配/拷贝一次载荷数组。
+        /// </summary>
+        public RTPPacket(
+            byte version,
+            bool padding,
+            bool extension,
+            byte csrcCount,
+            bool marker,
+            byte payloadType,
+            ushort sequenceNumber,
+            uint timestamp,
+            uint ssrc,
+            uint[] csrc,
+            ArraySegment<byte> payloadSegment,
+            int trackId,
+            StreamType streamType,
+            byte[] raw)
         {
             Version = version;
             Padding = padding;
@@ -55,7 +79,7 @@ namespace Cyaim.RTSPClient.Rtp
             Timestamp = timestamp;
             Ssrc = ssrc;
             Csrc = csrc ?? Array.Empty<uint>();
-            Payload = payload ?? Array.Empty<byte>();
+            PayloadSegment = payloadSegment;
             TrackId = trackId;
             StreamType = streamType;
             Raw = raw ?? Array.Empty<byte>();
@@ -121,10 +145,33 @@ namespace Cyaim.RTSPClient.Rtp
         public uint[] Csrc { get; }
 
         /// <summary>
-        /// The media payload data extracted from the RTP packet (after header, extensions, and CSRC list).
+        /// The media payload as a zero-copy slice into <see cref="Raw"/>.
+        /// This is the preferred accessor on the hot path — no allocation, no copy.
         /// Does not include padding bytes if <see cref="Padding"/> is set.
         /// </summary>
-        public byte[] Payload { get; }
+        public ArraySegment<byte> PayloadSegment { get; }
+
+        /// <summary>
+        /// The media payload data extracted from the RTP packet (after header, extensions, and CSRC list).
+        /// Does not include padding bytes if <see cref="Padding"/> is set.
+        /// NOTE: when the packet was parsed zero-copy, accessing this property materializes a copy —
+        /// prefer <see cref="PayloadSegment"/> in performance-sensitive code.
+        /// </summary>
+        public byte[] Payload
+        {
+            get
+            {
+                var segment = PayloadSegment;
+                if (segment.Array == null || segment.Count == 0)
+                    return Array.Empty<byte>();
+                if (segment.Offset == 0 && segment.Count == segment.Array.Length)
+                    return segment.Array;
+
+                var copy = new byte[segment.Count];
+                Buffer.BlockCopy(segment.Array, segment.Offset, copy, 0, segment.Count);
+                return copy;
+            }
+        }
 
         /// <summary>
         /// Track identifier derived from the interleaved TCP channel or SDP media description.
@@ -148,7 +195,7 @@ namespace Cyaim.RTSPClient.Rtp
         {
             return $"RTPPacket(V={Version}, PT={PayloadType}, Seq={SequenceNumber}, " +
                    $"TS={Timestamp}, SSRC=0x{Ssrc:X8}, M={Marker}, " +
-                   $"PayloadLen={Payload?.Length ?? 0}, TrackId={TrackId}, " +
+                   $"PayloadLen={PayloadSegment.Count}, TrackId={TrackId}, " +
                    $"Type={StreamType})";
         }
     }

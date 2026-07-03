@@ -25,14 +25,22 @@ namespace Cyaim.RTSPClient.Rtp
     /// </summary>
     public readonly struct MediaFrame
     {
-        public MediaFrame(byte[] data, uint timestamp, bool isKeyFrame, StreamType streamType, int trackId)
+        public MediaFrame(byte[] data, uint timestamp, bool isKeyFrame, StreamType streamType, int trackId,
+            bool isAccessUnitEnd = false)
         {
             Data = data;
             Timestamp = timestamp;
             IsKeyFrame = isKeyFrame;
             StreamType = streamType;
             TrackId = trackId;
+            IsAccessUnitEnd = isAccessUnitEnd;
         }
+
+        /// <summary>
+        /// 是否为访问单元（一帧）的最后一个 NAL（源自 RTP marker 位）。
+        /// 录制/封装时可据此判定帧边界，无需按时间戳变化自行推导。
+        /// </summary>
+        public bool IsAccessUnitEnd { get; }
 
         /// <summary>
         /// 帧数据 (NAL unit或音频采样)
