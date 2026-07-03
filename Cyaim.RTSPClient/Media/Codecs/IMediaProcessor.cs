@@ -57,9 +57,11 @@ namespace Cyaim.RTSPClient.Media
         Task InitializeAsync(VideoDecoderConfig config, CancellationToken ct = default);
 
         /// <summary>
-        /// 解码一帧
+        /// 解码一帧。
+        /// 返回 null 表示解码器暂未产出帧（如 B 帧重排导致的输出延迟）——这不是错误；
+        /// 后续输入或 <see cref="FlushAsync"/> 会补齐输出。流式消费请用 <see cref="DecodeStreamAsync"/>。
         /// </summary>
-        Task<VideoFrame> DecodeAsync(EncodedVideoFrame input, CancellationToken ct = default);
+        Task<VideoFrame?> DecodeAsync(EncodedVideoFrame input, CancellationToken ct = default);
 
         /// <summary>
         /// 解码连续流
@@ -95,9 +97,11 @@ namespace Cyaim.RTSPClient.Media
         Task InitializeAsync(VideoEncoderConfig config, CancellationToken ct = default);
 
         /// <summary>
-        /// 编码一帧
+        /// 编码一帧。
+        /// 返回 null 表示编码器暂未产出包（编码器内部缓冲）——这不是错误；
+        /// 后续输入或 <see cref="FlushAsync"/> 会补齐输出。
         /// </summary>
-        Task<EncodedVideoFrame> EncodeAsync(VideoFrame input, CancellationToken ct = default);
+        Task<EncodedVideoFrame?> EncodeAsync(VideoFrame input, CancellationToken ct = default);
 
         /// <summary>
         /// 编码连续流
@@ -246,6 +250,12 @@ namespace Cyaim.RTSPClient.Media
         public bool EnableHardwareAcceleration { get; init; } = true;
         public IntPtr DeviceHandle { get; init; } // GPU 设备句柄
         public string? HardwareDevice { get; init; } // "cuda", "dxva2", "qsv", etc.
+
+        /// <summary>
+        /// 解码器带外参数（H.264/H.265 可传 Annex-B 格式的 SPS/PPS/VPS，
+        /// 来自 SDP sprop-parameter-sets；码流内自带参数集时可不设）
+        /// </summary>
+        public byte[]? ExtraData { get; init; }
     }
 
     /// <summary>
@@ -317,9 +327,10 @@ namespace Cyaim.RTSPClient.Media
         Task InitializeAsync(AudioDecoderConfig config, CancellationToken ct = default);
 
         /// <summary>
-        /// 解码一帧
+        /// 解码一帧。
+        /// 返回 null 表示解码器暂未产出帧——不是错误，后续输入会补齐输出。
         /// </summary>
-        Task<AudioFrame> DecodeAsync(EncodedAudioFrame input, CancellationToken ct = default);
+        Task<AudioFrame?> DecodeAsync(EncodedAudioFrame input, CancellationToken ct = default);
 
         /// <summary>
         /// 解码连续流
@@ -350,9 +361,10 @@ namespace Cyaim.RTSPClient.Media
         Task InitializeAsync(AudioEncoderConfig config, CancellationToken ct = default);
 
         /// <summary>
-        /// 编码一帧
+        /// 编码一帧。
+        /// 返回 null 表示编码器暂未产出包（如分帧缓冲不足一个编码帧）——不是错误。
         /// </summary>
-        Task<EncodedAudioFrame> EncodeAsync(AudioFrame input, CancellationToken ct = default);
+        Task<EncodedAudioFrame?> EncodeAsync(AudioFrame input, CancellationToken ct = default);
 
         /// <summary>
         /// 编码连续流
@@ -454,6 +466,13 @@ namespace Cyaim.RTSPClient.Media
         public int Channels { get; init; }
         public int BitsPerSample { get; init; } = 16;
         public bool EnableHardwareAcceleration { get; init; }
+
+        /// <summary>
+        /// 解码器带外参数。RTSP 裸 AAC（RFC 3640，无 ADTS 头）必须提供
+        /// AudioSpecificConfig（即 SDP fmtp 的 config= 十六进制解码后的字节），
+        /// 否则 FFmpeg AAC 解码器无法初始化。
+        /// </summary>
+        public byte[]? ExtraData { get; init; }
     }
 
     /// <summary>

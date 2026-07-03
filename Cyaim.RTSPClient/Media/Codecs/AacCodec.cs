@@ -29,18 +29,18 @@ namespace Cyaim.RTSPClient.Media.Codecs
             return Task.CompletedTask;
         }
 
-        public Task<AudioFrame> DecodeAsync(EncodedAudioFrame input, CancellationToken ct = default)
+        public Task<AudioFrame?> DecodeAsync(EncodedAudioFrame input, CancellationToken ct = default)
         {
             if (_state != ProcessorState.Ready) throw new InvalidOperationException("Not initialized");
             var data = input.Data.Span;
             if (data.Length >= 7 && data[0] == 0xFF && (data[1] & 0xF0) == 0xF0)
-                return Task.FromResult(DecodeAdts(data, input.Timestamp));
-            return Task.FromResult(DecodeRaw(data, input.Timestamp, input.SampleRate, input.Channels));
+                return Task.FromResult<AudioFrame?>(DecodeAdts(data, input.Timestamp));
+            return Task.FromResult<AudioFrame?>(DecodeRaw(data, input.Timestamp, input.SampleRate, input.Channels));
         }
 
         public async IAsyncEnumerable<AudioFrame> DecodeStreamAsync(IAsyncEnumerable<EncodedAudioFrame> input, [EnumeratorCancellation] CancellationToken ct = default)
         {
-            await foreach (var frame in input.WithCancellation(ct)) yield return await DecodeAsync(frame, ct);
+            await foreach (var frame in input.WithCancellation(ct)) { var d = await DecodeAsync(frame, ct); if (d != null) yield return d; }
         }
 
         public Task FlushAsync(CancellationToken ct = default) => Task.CompletedTask;
@@ -97,15 +97,15 @@ namespace Cyaim.RTSPClient.Media.Codecs
 
         public Task InitializeAsync(AudioEncoderConfig config, CancellationToken ct = default) { _state = ProcessorState.Ready; return Task.CompletedTask; }
 
-        public Task<EncodedAudioFrame> EncodeAsync(AudioFrame input, CancellationToken ct = default)
+        public Task<EncodedAudioFrame?> EncodeAsync(AudioFrame input, CancellationToken ct = default)
         {
             if (_state != ProcessorState.Ready) throw new InvalidOperationException("Not initialized");
-            return Task.FromResult(new EncodedAudioFrame { Data = EncodeFrame(input.Data.Span, input.SampleRate, input.Channels), Codec = AudioCodec.AAC, SampleRate = input.SampleRate, Channels = input.Channels, Timestamp = input.Timestamp, Duration = input.Duration });
+            return Task.FromResult<EncodedAudioFrame?>(new EncodedAudioFrame { Data = EncodeFrame(input.Data.Span, input.SampleRate, input.Channels), Codec = AudioCodec.AAC, SampleRate = input.SampleRate, Channels = input.Channels, Timestamp = input.Timestamp, Duration = input.Duration });
         }
 
         public async IAsyncEnumerable<EncodedAudioFrame> EncodeStreamAsync(IAsyncEnumerable<AudioFrame> input, [EnumeratorCancellation] CancellationToken ct = default)
         {
-            await foreach (var frame in input.WithCancellation(ct)) yield return await EncodeAsync(frame, ct);
+            await foreach (var frame in input.WithCancellation(ct)) { var e = await EncodeAsync(frame, ct); if (e != null) yield return e; }
         }
 
         public Task FlushAsync(CancellationToken ct = default) => Task.CompletedTask;

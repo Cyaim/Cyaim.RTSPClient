@@ -58,7 +58,7 @@ namespace Cyaim.RTSPClient.Media.Codecs
             return Task.CompletedTask;
         }
 
-        public async Task<VideoFrame> DecodeAsync(EncodedVideoFrame input, CancellationToken ct = default)
+        public async Task<VideoFrame?> DecodeAsync(EncodedVideoFrame input, CancellationToken ct = default)
         {
             if (State != ProcessorState.Ready)
                 throw new InvalidOperationException("Decoder not initialized");
@@ -92,7 +92,7 @@ namespace Cyaim.RTSPClient.Media.Codecs
         {
             await foreach (var frame in inputStream.WithCancellation(ct))
             {
-                yield return await DecodeAsync(frame, ct);
+                { var d = await DecodeAsync(frame, ct); if (d != null) yield return d; }
             }
         }
 
@@ -130,7 +130,7 @@ namespace Cyaim.RTSPClient.Media.Codecs
             return Task.CompletedTask;
         }
 
-        public async Task<VideoFrame> DecodeAsync(EncodedVideoFrame input, CancellationToken ct = default)
+        public async Task<VideoFrame?> DecodeAsync(EncodedVideoFrame input, CancellationToken ct = default)
         {
             if (State != ProcessorState.Ready)
                 throw new InvalidOperationException("Decoder not initialized");
@@ -161,7 +161,7 @@ namespace Cyaim.RTSPClient.Media.Codecs
         {
             await foreach (var frame in inputStream.WithCancellation(ct))
             {
-                yield return await DecodeAsync(frame, ct);
+                { var d = await DecodeAsync(frame, ct); if (d != null) yield return d; }
             }
         }
 
@@ -192,7 +192,7 @@ namespace Cyaim.RTSPClient.Media.Codecs
             return Task.CompletedTask;
         }
 
-        public async Task<VideoFrame> DecodeAsync(EncodedVideoFrame input, CancellationToken ct = default)
+        public async Task<VideoFrame?> DecodeAsync(EncodedVideoFrame input, CancellationToken ct = default)
         {
             if (State != ProcessorState.Ready)
                 throw new InvalidOperationException("Decoder not initialized");
@@ -222,7 +222,7 @@ namespace Cyaim.RTSPClient.Media.Codecs
         {
             await foreach (var frame in inputStream.WithCancellation(ct))
             {
-                yield return await DecodeAsync(frame, ct);
+                { var d = await DecodeAsync(frame, ct); if (d != null) yield return d; }
             }
         }
 
@@ -278,7 +278,7 @@ namespace Cyaim.RTSPClient.Media.Codecs
             return Task.CompletedTask;
         }
 
-        public async Task<EncodedVideoFrame> EncodeAsync(VideoFrame input, CancellationToken ct = default)
+        public async Task<EncodedVideoFrame?> EncodeAsync(VideoFrame input, CancellationToken ct = default)
         {
             State = ProcessorState.Processing;
             try
@@ -306,7 +306,7 @@ namespace Cyaim.RTSPClient.Media.Codecs
         {
             await foreach (var frame in inputStream.WithCancellation(ct))
             {
-                yield return await EncodeAsync(frame, ct);
+                { var e = await EncodeAsync(frame, ct); if (e != null) yield return e; }
             }
         }
 
@@ -334,7 +334,7 @@ namespace Cyaim.RTSPClient.Media.Codecs
             return Task.CompletedTask;
         }
 
-        public async Task<EncodedVideoFrame> EncodeAsync(VideoFrame input, CancellationToken ct = default)
+        public async Task<EncodedVideoFrame?> EncodeAsync(VideoFrame input, CancellationToken ct = default)
         {
             State = ProcessorState.Processing;
             try
@@ -361,7 +361,7 @@ namespace Cyaim.RTSPClient.Media.Codecs
         {
             await foreach (var frame in inputStream.WithCancellation(ct))
             {
-                yield return await EncodeAsync(frame, ct);
+                { var e = await EncodeAsync(frame, ct); if (e != null) yield return e; }
             }
         }
 
