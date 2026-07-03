@@ -26,6 +26,7 @@ public sealed class RtspSession : IDisposable
     private string _sessionId = Guid.NewGuid().ToString("N")[..8];
     private RtspSessionState _state = RtspSessionState.Connected;
     private readonly Dictionary<int, RtpStream> _rtpStreams = new();
+    private Task? _senderTask;  // 会话级 RTP 发送任务（单订阅，按 TrackId 分发）
     private string _currentStreamPath = "/";  // 当前请求的流路径
     private bool _wasPlaying;  // 是否曾经在播放状态（用于统计）
     private readonly IPAddress _clientIpAddress;
@@ -96,9 +97,8 @@ public sealed class RtspSession : IDisposable
                     }
                     else
                     {
-                        // RTSP 文本请求 - 查找头部结束标记
-                        string dataSoFar = Encoding.UTF8.GetString(buffer, offset, buffered - offset);
-                        int headerEnd = FindHeaderEnd(dataSoFar);
+                        // RTSP 文本请求 - 字节级查找头部结束标记，避免整块解码字符串
+                        int headerEnd = FindHeaderEnd(buffer, offset, buffered, out int headerEndLength);
 
                         if (headerEnd < 0)
                         {
@@ -106,25 +106,23 @@ public sealed class RtspSession : IDisposable
                             break;
                         }
 
-                        // 计算实际头部长度
-                        int headerEndLength = GetHeaderEndLength(dataSoFar, headerEnd);
-                        string requestText = dataSoFar[..headerEnd];
+                        string requestText = Encoding.UTF8.GetString(buffer, offset, headerEnd - offset);
 
                         // 检查是否有内容体
-                        if (TryParseContentLength(requestText, out int contentLength))
+                        if (TryParseContentLength(requestText, out int contentLength) && contentLength > 0)
                         {
-                            int totalLength = headerEnd + headerEndLength + contentLength;
-                            if (dataSoFar.Length < totalLength)
+                            int totalLength = (headerEnd - offset) + headerEndLength + contentLength;
+                            if (buffered - offset < totalLength)
                                 break; // 需要更多数据
 
-                            string content = dataSoFar[(headerEnd + headerEndLength)..totalLength];
+                            string content = Encoding.UTF8.GetString(buffer, headerEnd + headerEndLength, contentLength);
                             await ProcessRequestAsync(requestText, content, linkedCt);
-                            offset += Encoding.UTF8.GetByteCount(dataSoFar[..totalLength]);
+                            offset += totalLength;
                         }
                         else
                         {
                             await ProcessRequestAsync(requestText, null, linkedCt);
-                            offset += Encoding.UTF8.GetByteCount(dataSoFar[..(headerEnd + headerEndLength)]);
+                            offset = headerEnd + headerEndLength;
                         }
                     }
                 }
@@ -144,6 +142,11 @@ public sealed class RtspSession : IDisposable
             }
         }
         catch (OperationCanceledException) { }
+        catch (IOException ex)
+        {
+            // 客户端断开连接（如播放器直接关闭）是正常情况，不作为错误记录
+            _logger?.LogDebug(ex, "Session connection closed: {SessionId}", _sessionId);
+        }
         catch (Exception ex)
         {
             _logger?.LogError(ex, "Session error: {SessionId}", _sessionId);
@@ -187,26 +190,28 @@ public sealed class RtspSession : IDisposable
     }
 
     /// <summary>
-    /// 查找头部结束位置
+    /// 字节级查找头部结束标记（\r\n\r\n 或 \n\n）
     /// </summary>
-    private static int FindHeaderEnd(string text)
+    /// <returns>头部结束位置（buffer 内绝对偏移），未找到返回 -1</returns>
+    private static int FindHeaderEnd(byte[] buffer, int offset, int end, out int markerLength)
     {
-        // 优先查找 \r\n\r\n
-        int index = text.IndexOf("\r\n\r\n");
-        if (index >= 0) return index;
-        
-        // 回退查找 \n\n
-        return text.IndexOf("\n\n");
-    }
+        for (int i = offset; i < end - 1; i++)
+        {
+            if (buffer[i] == (byte)'\r' && i + 3 < end &&
+                buffer[i + 1] == (byte)'\n' && buffer[i + 2] == (byte)'\r' && buffer[i + 3] == (byte)'\n')
+            {
+                markerLength = 4;
+                return i;
+            }
+            if (buffer[i] == (byte)'\n' && buffer[i + 1] == (byte)'\n')
+            {
+                markerLength = 2;
+                return i;
+            }
+        }
 
-    /// <summary>
-    /// 获取头部结束标记的长度
-    /// </summary>
-    private static int GetHeaderEndLength(string text, int position)
-    {
-        if (position + 4 <= text.Length && text[position..(position + 4)] == "\r\n\r\n")
-            return 4;
-        return 2; // \n\n
+        markerLength = 0;
+        return -1;
     }
 
     private bool TryParseContentLength(string headers, out int contentLength)
@@ -402,6 +407,9 @@ public sealed class RtspSession : IDisposable
             return CreateResponse(request.CSeq, 404, "Not Found");
         }
 
+        // SPS/PPS 可能在源启动后才可用，DESCRIBE 前刷新一次
+        _streamManager.RefreshStreamMetadata(streamInfo.Path);
+
         // 生成 SDP
         string sdp = GenerateSdp(streamInfo);
         int sdpByteCount = Encoding.UTF8.GetByteCount(sdp);
@@ -425,7 +433,9 @@ public sealed class RtspSession : IDisposable
 
         // 解析传输模式
         var transport = ParseTransport(transportHeader);
-        int trackId = _rtpStreams.Count;
+
+        // 从 URI 解析 trackID（SDP a=control:trackID=N）；解析不到时按到达顺序分配
+        int trackId = ParseTrackId(request.Uri) ?? _rtpStreams.Count;
 
         var rtpStream = new RtpStream
         {
@@ -462,8 +472,10 @@ public sealed class RtspSession : IDisposable
         }
         else
         {
-            // TCP Interleaved 模式
-            rtpStream.InterleavedChannel = trackId * 2;
+            // TCP Interleaved 模式：优先使用客户端请求的通道号
+            rtpStream.InterleavedChannel = transport.InterleavedStart >= 0
+                ? transport.InterleavedStart
+                : trackId * 2;
             transportResponse = $"RTP/AVP/TCP;unicast;interleaved={rtpStream.InterleavedChannel}-{rtpStream.InterleavedChannel + 1}";
         }
 
@@ -487,10 +499,11 @@ public sealed class RtspSession : IDisposable
             _streamManager.IncrementActiveClients(_currentStreamPath);
         }
 
-        // 开始发送 RTP 数据
-        foreach (var stream in _rtpStreams.Values)
+        // 单个发送任务订阅一次媒体源，按 TrackId 分发到各轨道
+        // （此前每轨道各订阅一次，包被随机分到某个订阅后又因 TrackId 不匹配被丢弃）
+        if (_senderTask == null || _senderTask.IsCompleted)
         {
-            _ = Task.Run(() => SendRtpStreamAsync(stream, _cts.Token), _cts.Token);
+            _senderTask = Task.Run(() => SendRtpSessionAsync(_cts.Token), _cts.Token);
         }
 
         var response = CreateResponse(request.CSeq, 200, "OK");
@@ -536,7 +549,7 @@ public sealed class RtspSession : IDisposable
 
     #region RTP 发送
 
-    private async Task SendRtpStreamAsync(RtpStream stream, CancellationToken ct)
+    private async Task SendRtpSessionAsync(CancellationToken ct)
     {
         try
         {
@@ -547,34 +560,37 @@ public sealed class RtspSession : IDisposable
                 return;
             }
 
-            _logger?.LogInformation("Starting RTP stream for {Path}, TrackId={TrackId}, Channel={Channel}", 
-                _currentStreamPath, stream.TrackId, stream.InterleavedChannel);
+            _logger?.LogInformation("Starting RTP session sender for {Path}, tracks=[{Tracks}]",
+                _currentStreamPath, string.Join(",", _rtpStreams.Keys));
 
-            int packetCount = 0;
+            long packetCount = 0;
             await foreach (var packet in _streamManager.GetRtpStreamAsync(_currentStreamPath, ct))
             {
                 if (_state != RtspSessionState.Playing || ct.IsCancellationRequested)
                     break;
 
-                // 按 TrackId 过滤：每个轨道只发送匹配的包
-                if (packet.TrackId != stream.TrackId)
+                // 按 TrackId 分发到已 SETUP 的轨道，未 SETUP 的轨道直接跳过
+                if (!_rtpStreams.TryGetValue(packet.TrackId, out var stream))
                     continue;
 
                 await SendRtpPacketAsync(stream, packet.Data, ct);
                 packetCount++;
 
-                // 每100个包记录一次日志
-                if (packetCount % 100 == 0)
+                if (packetCount % 1000 == 0)
                 {
-                    _logger?.LogDebug("Sent {Count} RTP packets, last size: {Size} bytes", 
+                    _logger?.LogDebug("Sent {Count} RTP packets, last size: {Size} bytes",
                         packetCount, packet.Data.Length);
                 }
             }
-            
-            _logger?.LogInformation("RTP stream ended for {Path}, sent {Count} packets", 
+
+            _logger?.LogInformation("RTP session sender ended for {Path}, sent {Count} packets",
                 _currentStreamPath, packetCount);
         }
         catch (OperationCanceledException) { }
+        catch (IOException ex)
+        {
+            _logger?.LogDebug(ex, "RTP sender connection closed");
+        }
         catch (Exception ex)
         {
             _logger?.LogError(ex, "RTP stream error");
@@ -591,24 +607,30 @@ public sealed class RtspSession : IDisposable
         }
         else
         {
-            // TCP interleaved: header+data 合并为单次 WriteAsync，减少锁时间和 fragmentation
+            // TCP interleaved: header+data 合并为单次 WriteAsync；缓冲区走 ArrayPool 避免逐包分配
             int frameLen = 4 + data.Length;
-            await _streamLock.WaitAsync(ct);
+            byte[] frame = ArrayPool<byte>.Shared.Rent(frameLen);
             try
             {
-                byte[] frame = new byte[frameLen];
                 frame[0] = 0x24;
                 frame[1] = (byte)stream.InterleavedChannel;
                 frame[2] = (byte)((data.Length >> 8) & 0xFF);
                 frame[3] = (byte)(data.Length & 0xFF);
                 Array.Copy(data, 0, frame, 4, data.Length);
 
-                await _stream.WriteAsync(frame, ct);
-                await _stream.FlushAsync(ct);
+                await _streamLock.WaitAsync(ct);
+                try
+                {
+                    await _stream.WriteAsync(frame.AsMemory(0, frameLen), ct);
+                }
+                finally
+                {
+                    _streamLock.Release();
+                }
             }
             finally
             {
-                _streamLock.Release();
+                ArrayPool<byte>.Shared.Return(frame);
             }
             bytesSent = frameLen;
         }
@@ -623,23 +645,26 @@ public sealed class RtspSession : IDisposable
 
     private async Task SendResponseAsync(RtspResponse response, CancellationToken ct)
     {
+        // 头部 + 内容体合并为一个缓冲区，并持有 _streamLock 写入，
+        // 避免 PLAY 后 RTP interleaved 帧插入响应中间破坏客户端解析
         string responseText = response.ToString();
-        byte[] responseBytes = Encoding.UTF8.GetBytes(responseText);
-        
-        // 记录发送的原始数据（调试用）
-        _logger?.LogDebug("Sending {Length} bytes: {Data}", responseBytes.Length, 
-            Convert.ToHexString(responseBytes[..Math.Min(100, responseBytes.Length)]));
-        
-        await _stream.WriteAsync(responseBytes, 0, responseBytes.Length, ct);
+        byte[] responseBytes = response.Content == null
+            ? Encoding.UTF8.GetBytes(responseText)
+            : Encoding.UTF8.GetBytes(responseText + response.Content);
 
-        if (response.Content != null)
+        _logger?.LogDebug("Sending {Length} bytes: {Data}", responseBytes.Length,
+            Convert.ToHexString(responseBytes[..Math.Min(100, responseBytes.Length)]));
+
+        await _streamLock.WaitAsync(ct);
+        try
         {
-            byte[] contentBytes = Encoding.UTF8.GetBytes(response.Content);
-            await _stream.WriteAsync(contentBytes, 0, contentBytes.Length, ct);
+            await _stream.WriteAsync(responseBytes, ct);
+        }
+        finally
+        {
+            _streamLock.Release();
         }
 
-        await _stream.FlushAsync(ct);
-        
         _logger?.LogDebug("Response sent successfully");
     }
 
@@ -681,7 +706,6 @@ public sealed class RtspSession : IDisposable
         sb.Append("t=0 0").Append(CRLF);
 
         // 视频媒体
-        if (streamInfo.VideoCodec != VideoCodecType.H264 || streamInfo.Width > 0)
         {
             int payloadType = streamInfo.VideoCodec switch
             {
@@ -738,9 +762,10 @@ public sealed class RtspSession : IDisposable
             // AAC fmtp for RFC 3640 (required for proper decoding)
             if (streamInfo.AudioCodec == AudioCodecType.AAC)
             {
-                // AudioSpecificConfig: AAC-LC, 44100Hz, stereo = 0x1210
-                // Or if mono: 0x1208
-                string asc = streamInfo.Channels >= 2 ? "1210" : "1208";
+                // 优先使用媒体源提取的真实 AudioSpecificConfig，与码流完全一致
+                string asc = streamInfo.AacAudioSpecificConfig is { Length: > 0 } realAsc
+                    ? Convert.ToHexString(realAsc)
+                    : ComputeAacAudioSpecificConfig(streamInfo.SampleRate, streamInfo.Channels);
                 sb.Append($"a=fmtp:{payloadType} streamtype=5; profile-level-id=1; ")
                   .Append($"mode=AAC-hbr; config={asc}; ")
                   .Append("sizeLength=13; indexLength=3; indexDeltaLength=3")
@@ -754,9 +779,48 @@ public sealed class RtspSession : IDisposable
         return sb.ToString();
     }
 
+    /// <summary>
+    /// 计算 AAC AudioSpecificConfig（2 字节 hex）
+    /// 5位 objectType(2=AAC-LC) + 4位 采样率索引 + 4位 声道数 + 3位 0
+    /// </summary>
+    private static string ComputeAacAudioSpecificConfig(int sampleRate, int channels)
+    {
+        ReadOnlySpan<int> rates = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+        int freqIndex = rates.IndexOf(sampleRate);
+        if (freqIndex < 0) freqIndex = 4; // 默认 44100
+
+        int channelConfig = Math.Clamp(channels, 1, 7);
+        int config = (2 << 11) | (freqIndex << 7) | (channelConfig << 3);
+        return config.ToString("X4");
+    }
+
+    /// <summary>
+    /// 从 SETUP URI 中解析 trackID（如 rtsp://host/stream/trackID=1）
+    /// </summary>
+    private static int? ParseTrackId(string uri)
+    {
+        if (string.IsNullOrEmpty(uri))
+            return null;
+
+        int index = uri.LastIndexOf("trackID=", StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+            return null;
+
+        int start = index + "trackID=".Length;
+        int end = start;
+        while (end < uri.Length && char.IsDigit(uri[end]))
+            end++;
+
+        return end > start && int.TryParse(uri[start..end], out int trackId) ? trackId : null;
+    }
+
     private TransportInfo ParseTransport(string header)
     {
-        var info = new TransportInfo();
+        var info = new TransportInfo
+        {
+            InterleavedStart = -1,  // -1 = 客户端未指定
+            InterleavedEnd = -1
+        };
         var parts = header.Split(';');
 
         // 判断协议类型
@@ -794,17 +858,24 @@ public sealed class RtspSession : IDisposable
         return info;
     }
 
-    private string GetLocalIp()
+    private static string? _cachedLocalIp;
+
+    private static string GetLocalIp()
     {
+        // DNS 查询较慢且结果稳定，缓存避免每次 DESCRIBE 都同步阻塞
+        if (_cachedLocalIp != null)
+            return _cachedLocalIp;
+
         try
         {
             var host = Dns.GetHostEntry(Dns.GetHostName());
-            return host.AddressList.FirstOrDefault(ip => ip.AddressFamily == AddressFamily.InterNetwork)?.ToString() ?? "127.0.0.1";
+            _cachedLocalIp = host.AddressList.FirstOrDefault(ip => ip.AddressFamily == AddressFamily.InterNetwork)?.ToString() ?? "127.0.0.1";
         }
         catch
         {
-            return "127.0.0.1";
+            _cachedLocalIp = "127.0.0.1";
         }
+        return _cachedLocalIp;
     }
 
     /// <summary>
