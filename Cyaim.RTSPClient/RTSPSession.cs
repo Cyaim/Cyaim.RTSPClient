@@ -25,10 +25,28 @@ namespace Cyaim.RTSPClient
         private NetworkStream? _tcpStream;
         private readonly ConcurrentDictionary<int, TaskCompletionSource<RTSPResponse>> _pendingRequests = new();
         private readonly ConcurrentDictionary<int, RTSPResponse> _requestResults = new();
+        private readonly ConcurrentDictionary<int, InterleavedChannelInfo> _channelMap = new();
         private int _cseq;
         private bool _disposed;
         private CancellationTokenSource? _receiveCts;
         private Task? _receiveTask;
+
+        /// <summary>
+        /// TCP interleaved 通道注册信息（SETUP 时记录）
+        /// </summary>
+        private readonly struct InterleavedChannelInfo
+        {
+            public InterleavedChannelInfo(int trackId, StreamType streamType, bool isRtcp)
+            {
+                TrackId = trackId;
+                StreamType = streamType;
+                IsRtcp = isRtcp;
+            }
+
+            public int TrackId { get; }
+            public StreamType StreamType { get; }
+            public bool IsRtcp { get; }
+        }
 
         #endregion
 
@@ -253,6 +271,7 @@ namespace Cyaim.RTSPClient
                 _client = null;
                 SessionId = null;
                 SDP = null;
+                _channelMap.Clear();
                 SetState(RTSPConnectionState.Disconnected);
             }
         }
@@ -294,46 +313,94 @@ namespace Cyaim.RTSPClient
         {
             if (_tcpStream == null) return;
 
-            var buffer = new byte[4096];
+            // 累积缓冲：TCP 是字节流，interleaved RTP 帧和 RTSP 响应都可能跨多次
+            // Read 到达，或一次 Read 到达多帧（旧实现按“一次 Read 一条消息”处理，
+            // 会大量丢弃 RTP 包，音频尤其严重）
+            var buffer = new byte[64 * 1024];
+            int buffered = 0;
 
             try
             {
                 while (!ct.IsCancellationRequested && _tcpStream != null)
                 {
-                    int bytesRead = await _tcpStream.ReadAsync(buffer, 0, buffer.Length, ct);
+                    if (buffered == buffer.Length)
+                    {
+                        // 单条消息超过缓冲区，扩容（上限 1MB，超过视为协议错误）
+                        if (buffer.Length >= 1024 * 1024)
+                            throw new InvalidOperationException("RTSP message exceeds 1MB buffer limit");
+                        Array.Resize(ref buffer, buffer.Length * 2);
+                    }
+
+                    int bytesRead = await _tcpStream.ReadAsync(buffer, buffered, buffer.Length - buffered, ct);
                     if (bytesRead == 0)
                     {
                         // 服务器关闭连接
                         break;
                     }
 
-                    // 检查是否为 RTP 数据 (以 $ 开头)
-                    if (buffer[0] == 0x24 && bytesRead >= 4)
-                    {
-                        // TCP interleaved RTP 数据
-                        byte channel = buffer[1];
-                        int length = (buffer[2] << 8) | buffer[3];
+                    buffered += bytesRead;
+                    int offset = 0;
 
-                        if (bytesRead >= 4 + length)
+                    while (offset < buffered)
+                    {
+                        if (buffer[offset] == 0x24)
                         {
+                            // TCP interleaved RTP/RTCP 帧
+                            if (buffered - offset < 4)
+                                break; // 头不完整，等待更多数据
+
+                            byte channel = buffer[offset + 1];
+                            int length = (buffer[offset + 2] << 8) | buffer[offset + 3];
+
+                            if (buffered - offset < 4 + length)
+                                break; // 帧不完整，等待更多数据
+
                             var rtpData = new byte[length];
-                            Array.Copy(buffer, 4, rtpData, 0, length);
+                            Array.Copy(buffer, offset + 4, rtpData, 0, length);
                             OnDataReceived(rtpData, channel);
+
+                            offset += 4 + length;
+                        }
+                        else
+                        {
+                            // RTSP 响应文本：先找头部结束，再按 Content-Length 取内容体
+                            int headerEnd = FindHeaderEnd(buffer, offset, buffered, out int markerLength);
+                            if (headerEnd < 0)
+                                break; // 头部不完整，等待更多数据
+
+                            string headerText = Encoding.UTF8.GetString(buffer, offset, headerEnd - offset);
+                            int contentLength = ParseContentLength(headerText);
+                            int totalLength = (headerEnd - offset) + markerLength + contentLength;
+
+                            if (buffered - offset < totalLength)
+                                break; // 内容体不完整，等待更多数据
+
+                            string msg = Encoding.UTF8.GetString(buffer, offset, totalLength);
+                            var rawBytes = new byte[totalLength];
+                            Array.Copy(buffer, offset, rawBytes, 0, totalLength);
+                            var response = new RTSPResponse(msg, rawBytes);
+
+                            // 完成等待的请求
+                            if (_pendingRequests.TryRemove(response.CSeq, out var tcs))
+                            {
+                                tcs.TrySetResult(response);
+                            }
+
+                            _requestResults.AddOrUpdate(response.CSeq, response, (_, _) => response);
+
+                            offset += totalLength;
                         }
                     }
-                    else
+
+                    // 移动剩余数据到缓冲区开头
+                    if (offset > 0 && offset < buffered)
                     {
-                        // RTSP 响应文本
-                        string msg = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                        var response = new RTSPResponse(msg, buffer);
-
-                        // 完成等待的请求
-                        if (_pendingRequests.TryRemove(response.CSeq, out var tcs))
-                        {
-                            tcs.TrySetResult(response);
-                        }
-
-                        _requestResults.AddOrUpdate(response.CSeq, response, (_, _) => response);
+                        Buffer.BlockCopy(buffer, offset, buffer, 0, buffered - offset);
+                        buffered -= offset;
+                    }
+                    else if (offset >= buffered)
+                    {
+                        buffered = 0;
                     }
                 }
             }
@@ -353,24 +420,76 @@ namespace Cyaim.RTSPClient
             }
         }
 
+        /// <summary>
+        /// 字节级查找头部结束标记（\r\n\r\n 或 \n\n）
+        /// </summary>
+        /// <returns>头部结束位置（buffer 内绝对偏移），未找到返回 -1</returns>
+        private static int FindHeaderEnd(byte[] buffer, int offset, int end, out int markerLength)
+        {
+            for (int i = offset; i < end - 1; i++)
+            {
+                if (buffer[i] == (byte)'\r' && i + 3 < end &&
+                    buffer[i + 1] == (byte)'\n' && buffer[i + 2] == (byte)'\r' && buffer[i + 3] == (byte)'\n')
+                {
+                    markerLength = 4;
+                    return i;
+                }
+                if (buffer[i] == (byte)'\n' && buffer[i + 1] == (byte)'\n')
+                {
+                    markerLength = 2;
+                    return i;
+                }
+            }
+
+            markerLength = 0;
+            return -1;
+        }
+
+        private static int ParseContentLength(string headers)
+        {
+            foreach (var line in headers.Split('\n'))
+            {
+                var trimmed = line.TrimEnd('\r');
+                if (trimmed.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                {
+                    return int.TryParse(trimmed.Substring("Content-Length:".Length).Trim(), out int length)
+                        ? length : 0;
+                }
+            }
+            return 0;
+        }
+
         private void OnDataReceived(byte[] data, byte channel)
         {
-            var packet = new Rtp.RTPPacket(
-                version: 2,
-                padding: false,
-                extension: false,
-                csrcCount: 0,
-                marker: false,
-                payloadType: 0,
-                sequenceNumber: 0,
-                timestamp: 0,
-                ssrc: 0,
-                csrc: Array.Empty<uint>(),
-                payload: data,
-                trackId: channel / 2,
-                streamType: channel % 2 == 0 ? StreamType.Video : StreamType.Audio,
-                raw: data
-            );
+            int trackId;
+            StreamType streamType;
+
+            if (_channelMap.TryGetValue(channel, out var info))
+            {
+                if (info.IsRtcp)
+                    return; // RTCP 帧不作为 RTP 数据抛出
+                trackId = info.TrackId;
+                streamType = info.StreamType;
+            }
+            else
+            {
+                // 未注册的通道按约定推断：偶数=RTP，奇数=RTCP；track0=视频，其余=音频
+                if (channel % 2 != 0)
+                    return;
+                trackId = channel / 2;
+                streamType = trackId == 0 ? StreamType.Video : StreamType.Audio;
+            }
+
+            Rtp.RTPPacket packet;
+            try
+            {
+                packet = Rtp.RTPPacketParser.Parse(data, trackId, streamType);
+            }
+            catch (Exceptions.RTPParseException)
+            {
+                return; // 丢弃无法解析的包
+            }
+
             DataReceived?.Invoke(this, new RtpDataReceivedEventArgs(packet));
         }
 
@@ -482,7 +601,7 @@ namespace Cyaim.RTSPClient
                 throw new InvalidOperationException("Not connected");
 
             var request = CreateRequest("SETUP");
-            request.URI = Uri.AbsoluteUri + channelUri;
+            request.URI = BuildSetupUri(channelUri);
             request.Transport = transport;
             if (useBackchannel)
                 request.Require = OnvifBackChannel;
@@ -493,7 +612,87 @@ namespace Cyaim.RTSPClient
             var response = await SendRequestAsync(request, ct);
             UpdateSessionFromResponse(response);
 
+            if (response.StatusCode == "200")
+            {
+                RegisterInterleavedChannels(channelUri, transport, response);
+            }
+
             return response;
+        }
+
+        /// <summary>
+        /// 拼接 SETUP URI：控制属性可能是绝对 URL 或相对路径
+        /// </summary>
+        private string BuildSetupUri(string channelUri)
+        {
+            if (string.IsNullOrEmpty(channelUri))
+                return Uri!.AbsoluteUri;
+
+            // 绝对 URL 直接使用
+            if (channelUri.StartsWith("rtsp://", StringComparison.OrdinalIgnoreCase) ||
+                channelUri.StartsWith("rtsps://", StringComparison.OrdinalIgnoreCase))
+                return channelUri;
+
+            string baseUri = Uri!.AbsoluteUri;
+            if (baseUri.EndsWith("/") || channelUri.StartsWith("/"))
+                return baseUri + channelUri;
+            return baseUri + "/" + channelUri;
+        }
+
+        /// <summary>
+        /// SETUP 成功后注册 interleaved 通道 → 轨道/媒体类型映射
+        /// （旧实现按 channel%2 猜测音视频，把音频 RTP(通道2)误判为视频、把 RTCP 当 RTP 抛出）
+        /// </summary>
+        private void RegisterInterleavedChannels(string channelUri, string requestedTransport, RTSPResponse response)
+        {
+            // 服务器响应的 Transport 优先，回退到请求值
+            string transport = response.Headers.FirstOrDefault(x =>
+                x.Key.Equals("Transport", StringComparison.OrdinalIgnoreCase)).Value ?? requestedTransport;
+
+            int rtpChannel = -1, rtcpChannel = -1;
+            foreach (var part in transport.Split(';'))
+            {
+                var trimmed = part.Trim();
+                if (trimmed.StartsWith("interleaved=", StringComparison.OrdinalIgnoreCase))
+                {
+                    var channels = trimmed.Substring("interleaved=".Length).Split('-');
+                    if (channels.Length >= 1 && int.TryParse(channels[0], out int start))
+                        rtpChannel = start;
+                    if (channels.Length >= 2 && int.TryParse(channels[1], out int end))
+                        rtcpChannel = end;
+                }
+            }
+
+            if (rtpChannel < 0)
+                return; // 非 interleaved 模式
+
+            // 解析 trackID
+            int trackId = rtpChannel / 2;
+            int trackIndex = channelUri.LastIndexOf("trackID=", StringComparison.OrdinalIgnoreCase);
+            if (trackIndex >= 0)
+            {
+                int start = trackIndex + "trackID=".Length;
+                int end = start;
+                while (end < channelUri.Length && char.IsDigit(channelUri[end]))
+                    end++;
+                if (end > start && int.TryParse(channelUri.Substring(start, end - start), out int parsed))
+                    trackId = parsed;
+            }
+
+            // 从 SDP 确定媒体类型：优先匹配控制属性，回退到 track0=视频 约定
+            StreamType streamType = trackId == 0 ? StreamType.Video : StreamType.Audio;
+            var media = SDP?.MediaDescriptions?.FirstOrDefault(m =>
+                m.ControlUri != null &&
+                (m.ControlUri.EndsWith(channelUri, StringComparison.OrdinalIgnoreCase) ||
+                 channelUri.EndsWith(m.ControlUri, StringComparison.OrdinalIgnoreCase)));
+            if (media != null)
+            {
+                streamType = media.IsAudio ? StreamType.Audio : StreamType.Video;
+            }
+
+            _channelMap[rtpChannel] = new InterleavedChannelInfo(trackId, streamType, isRtcp: false);
+            if (rtcpChannel >= 0)
+                _channelMap[rtcpChannel] = new InterleavedChannelInfo(trackId, streamType, isRtcp: true);
         }
 
         /// <summary>

@@ -219,10 +219,11 @@ namespace Cyaim.RTSPClient.Rtp
             if (available < totalLength)
                 return false;
 
-            // Derive track ID and stream type from channel
-            // Channel 0,2,4,... = video; 1,3,5,... = audio (convention)
+            // Derive track ID and stream type from channel.
+            // Convention: each track uses a channel pair (RTP=even, RTCP=odd);
+            // track 0 is video, subsequent tracks are audio.
             int trackId = channel / 2;
-            StreamType streamType = (channel % 2 == 0) ? StreamType.Video : StreamType.Audio;
+            StreamType streamType = (trackId == 0) ? StreamType.Video : StreamType.Audio;
 
             // Parse the RTP payload within the interleaved frame
             byte[] rtpData = new byte[dataLength];
