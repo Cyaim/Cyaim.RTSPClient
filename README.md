@@ -45,7 +45,7 @@ dotnet add package Cyaim.RTSPClient.Codecs.FFmpeg.Audio
 
 ### 快速开始
 
-#### 基本用法
+#### 基本用法（推荐：一键拉流）
 
 ```csharp
 using Cyaim.RTSPClient;
@@ -53,50 +53,68 @@ using Cyaim.RTSPClient.Session;
 
 var config = new RTSPSessionConfig
 {
-    Url = "rtsp://192.168.1.127:554",
+    Url = "rtsp://192.168.1.127:554/live",
     Username = "admin",
     Password = "admin",
-    AutoReconnect = true
+    AutoReconnect = true          // 断线后自动重连并恢复 SETUP/PLAY
 };
 
-using var session = new RTSPSession(config);
+await using var session = new RTSPSession(config);
 
-session.StateChanged += (s, e) => 
+session.StateChanged += (s, e) =>
     Console.WriteLine($"状态变更: {e.OldState} -> {e.NewState}");
+session.Reconnected += (s, e) => Console.WriteLine("已自动重连");
 
-await session.ConnectAsync();
-await session.SetupAsync("trackID=1", TransportMode.TcpInterleaved);
-await session.PlayAsync();
+// 一键完成 连接 → OPTIONS → DESCRIBE（自动认证）→ SETUP 全部轨道 → PLAY
+await session.StartAsync();
 
-var reader = session.GetRTPReader(trackId: 0);
+// 按轨道读取原始 RTP 包（track 0 通常是视频）
+var reader = session.GetRtpReader(trackId: 0);
 while (await reader.WaitToReadAsync())
 {
     while (reader.TryRead(out var packet))
     {
-        Console.WriteLine($"Seq: {packet.SequenceNumber}");
+        Console.WriteLine($"Seq: {packet.SequenceNumber}, TS: {packet.Timestamp}");
     }
 }
 ```
 
-#### 视频接收
+#### 视频帧接收（解包后的完整 NAL）
 
 ```csharp
-using Cyaim.RTSPClient.Rtp;
-
-var videoReceiver = VideoReceiver.CreateH264Receiver(session.GetRTPReader(0));
-videoReceiver.KeyFrameReceived += (s, e) =>
-    Console.WriteLine($"关键帧: {e.Frame.Data.Length} bytes");
-
-videoReceiver.StartReceiving();
-
-var reader = videoReceiver.GetFrameReader();
-while (await reader.WaitToReadAsync())
+// GetMediaFrameReader 自动根据 SDP 选择 H.264/H.265 解包器，
+// 并注入 sprop-parameter-sets 中的 SPS/PPS
+var frames = session.GetMediaFrameReader(trackId: 0);
+while (await frames.WaitToReadAsync())
 {
-    while (reader.TryRead(out var frame))
+    while (frames.TryRead(out var frame))
     {
-        // 处理视频帧
+        // frame.Data = 完整 NAL；frame.IsKeyFrame；frame.IsAccessUnitEnd = 帧边界
+        Console.WriteLine($"NAL: {frame.Data.Length} bytes, key={frame.IsKeyFrame}");
     }
 }
+```
+
+#### 手动控制（低层 API）
+
+```csharp
+await using var session = new RTSPSession("rtsp://192.168.1.127:554/live");
+session.UserName = "admin";
+session.Password = "admin";   // 401 时自动携带凭据重试（Digest qop=auth / Basic）
+
+await session.ConnectAsync();
+await session.OptionsAsync();
+await session.DescribeAsync();
+
+// 按 SDP 控制属性 SETUP（TransportMode 枚举重载自动分配 interleaved 通道）
+var video = session.SDP!.GetVideoMedia();
+await session.SetupAsync(video!.ControlUri!, TransportMode.TcpInterleaved);
+await session.PlayAsync();
+
+session.DataReceived += (s, e) =>
+{
+    // 注意：事件在独立泵线程触发，处理慢不会阻塞网络接收（有界队列，超限丢最旧包）
+};
 ```
 
 #### 硬件加速解码

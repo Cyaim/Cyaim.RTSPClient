@@ -2,8 +2,11 @@
 - **[Getting Started / 快速开始](Getting-Started)**
 - **[Configuration / 配置](Configuration)**
 - **[Events / 事件](Events)**
+- **[Reliability / 可靠性](Reliability)**
+- **[Performance / 性能](Performance)**
 - **[Codecs / 编解码器](Codecs)**
 - **[Hardware Acceleration / 硬件加速](Hardware-Acceleration)**
 - **[API Reference / API 参考](API-Reference)**
 - **[Examples / 示例](Examples)**
+- **[Migration v3 / 升级指南](Migration-v3)**
 - **[FAQ / 常见问题](FAQ)**

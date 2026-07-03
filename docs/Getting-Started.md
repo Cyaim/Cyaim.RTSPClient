@@ -28,6 +28,8 @@ Install-Package Cyaim.RTSPClient
 
 ### 基本使用
 
+> 提示：推荐直接调用 `session.StartAsync()` 一键完成 连接 → OPTIONS → DESCRIBE（自动认证）→ SETUP 全部媒体轨 → PLAY（见下方完整示例）。以下 2~4 步展示等价的低层 API。
+
 #### 1. 创建会话
 
 ```csharp
@@ -41,13 +43,15 @@ var config = new RTSPSessionConfig
     Password = "admin"
 };
 
-using var session = new RTSPSession(config);
+await using var session = new RTSPSession(config);
 ```
 
 #### 2. 连接服务器
 
 ```csharp
 await session.ConnectAsync();
+await session.OptionsAsync();
+await session.DescribeAsync(); // 遇到 401 自动完成 Digest/Basic 认证并重试
 ```
 
 #### 3. 设置媒体通道
@@ -69,7 +73,8 @@ await session.PlayAsync();
 #### 5. 读取数据
 
 ```csharp
-var reader = session.GetRTPReader(trackId: 0);
+// trackId 与 SETUP 控制串中的 trackID 对应
+var reader = session.GetRtpReader(trackId: 1);
 while (await reader.WaitToReadAsync())
 {
     while (reader.TryRead(out var packet))
@@ -96,7 +101,7 @@ var config = new RTSPSessionConfig
 };
 
 // 创建会话
-using var session = new RTSPSession(config);
+await using var session = new RTSPSession(config);
 
 // 事件监听
 session.StateChanged += (s, e) => 
@@ -108,17 +113,11 @@ session.DataReceived += (s, e) =>
 session.Error += (s, e) => 
     Console.WriteLine($"错误: {e.Message}");
 
-// 连接
-await session.ConnectAsync();
+// 一键拉流：连接 → OPTIONS → DESCRIBE（自动认证）→ SETUP 全部媒体轨 → PLAY
+await session.StartAsync();
 
-// 设置视频通道
-await session.SetupAsync("trackID=1", TransportMode.TcpInterleaved);
-
-// 开始播放
-await session.PlayAsync();
-
-// 读取 RTP 数据
-var reader = session.GetRTPReader(trackId: 0);
+// 读取 RTP 数据（trackId 与 SDP 控制串中的 trackID 对应）
+var reader = session.GetRtpReader(trackId: 0);
 while (await reader.WaitToReadAsync())
 {
     while (reader.TryRead(out var packet))
@@ -154,6 +153,8 @@ Install-Package Cyaim.RTSPClient
 
 ### Basic Usage
 
+> Tip: the recommended path is a single call to `session.StartAsync()`, which performs Connect → OPTIONS → DESCRIBE (auto authentication) → SETUP all tracks → PLAY (see the complete example below). Steps 2-4 show the equivalent low-level API.
+
 #### 1. Create Session
 
 ```csharp
@@ -167,13 +168,15 @@ var config = new RTSPSessionConfig
     Password = "admin"
 };
 
-using var session = new RTSPSession(config);
+await using var session = new RTSPSession(config);
 ```
 
 #### 2. Connect to Server
 
 ```csharp
 await session.ConnectAsync();
+await session.OptionsAsync();
+await session.DescribeAsync(); // 401 responses trigger automatic Digest/Basic authentication retry
 ```
 
 #### 3. Setup Media Channels
@@ -195,7 +198,8 @@ await session.PlayAsync();
 #### 5. Read Data
 
 ```csharp
-var reader = session.GetRTPReader(trackId: 0);
+// trackId matches the trackID in the SETUP control URI
+var reader = session.GetRtpReader(trackId: 1);
 while (await reader.WaitToReadAsync())
 {
     while (reader.TryRead(out var packet))
@@ -222,7 +226,7 @@ var config = new RTSPSessionConfig
 };
 
 // Create session
-using var session = new RTSPSession(config);
+await using var session = new RTSPSession(config);
 
 // Event handlers
 session.StateChanged += (s, e) => 
@@ -234,17 +238,11 @@ session.DataReceived += (s, e) =>
 session.Error += (s, e) => 
     Console.WriteLine($"Error: {e.Message}");
 
-// Connect
-await session.ConnectAsync();
+// One-call streaming: Connect → OPTIONS → DESCRIBE (auto auth) → SETUP all tracks → PLAY
+await session.StartAsync();
 
-// Setup video channel
-await session.SetupAsync("trackID=1", TransportMode.TcpInterleaved);
-
-// Start playing
-await session.PlayAsync();
-
-// Read RTP data
-var reader = session.GetRTPReader(trackId: 0);
+// Read RTP data (trackId matches the trackID in the SDP control URI)
+var reader = session.GetRtpReader(trackId: 0);
 while (await reader.WaitToReadAsync())
 {
     while (reader.TryRead(out var packet))

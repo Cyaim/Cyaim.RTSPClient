@@ -12,14 +12,16 @@
 
 | 页面 | 说明 |
 |------|------|
-| [Getting Started / 快速开始](Getting-Started) | 安装和基本使用 |
+| [Getting Started / 快速开始](Getting-Started) | 安装和基本使用（推荐 `StartAsync` 一键拉流） |
 | [Configuration / 配置](Configuration) | 详细配置选项 |
-| [Events / 事件](Events) | 事件系统详解 |
-| [Transport / 传输](Transport) | TCP/UDP 传输模式 |
-| [Authentication / 认证](Authentication) | Digest 认证 |
-| [Media / 媒体](Media) | 视频/音频编码支持 |
+| [Events / 事件](Events) | 事件系统详解（含重连、RTCP 墙钟映射） |
+| [Reliability / 可靠性](Reliability) | 自动保活/重连、RTCP、背压、错误模型、释放语义 |
+| [Performance / 性能](Performance) | 零拷贝、SIMD、千路并发调优 |
+| [Codecs / 编解码器](Codecs) | 视频/音频编码支持 |
+| [Hardware Acceleration / 硬件加速](Hardware-Acceleration) | FFmpeg 插件硬解 |
 | [API Reference / API 参考](API-Reference) | 完整 API 文档 |
 | [Examples / 示例](Examples) | 更多示例代码 |
+| [Migration v3 / 升级指南](Migration-v3) | v2 → v3 行为与 API 变化 |
 | [FAQ / 常见问题](FAQ) | 常见问题解答 |
 
 ### 系统要求
@@ -37,14 +39,16 @@ Welcome to the Cyaim.RTSPClient documentation!
 
 | Page | Description |
 |------|-------------|
-| [Getting Started](Getting-Started) | Installation and basic usage |
+| [Getting Started](Getting-Started) | Installation and basic usage (one-call `StartAsync`) |
 | [Configuration](Configuration) | Detailed configuration options |
-| [Events](Events) | Event system详解 |
-| [Transport](Transport) | TCP/UDP transport modes |
-| [Authentication](Authentication) | Digest authentication |
-| [Media](Media) | Video/audio codec support |
+| [Events](Events) | Event system (incl. reconnect, RTCP wall-clock mapping) |
+| [Reliability](Reliability) | Auto keep-alive/reconnect, RTCP, backpressure, error model |
+| [Performance](Performance) | Zero-copy, SIMD, tuning for 1000+ streams |
+| [Codecs](Codecs) | Video/audio codec support |
+| [Hardware Acceleration](Hardware-Acceleration) | FFmpeg plugin hardware decoding |
 | [API Reference](API-Reference) | Complete API documentation |
 | [Examples](Examples) | More code examples |
+| [Migration v3](Migration-v3) | v2 → v3 behavioral & API changes |
 | [FAQ](FAQ) | Frequently asked questions |
 
 ### Requirements

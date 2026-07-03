@@ -19,7 +19,7 @@ var config = new RTSPSessionConfig
     Password = "admin"
 };
 
-using var session = new RTSPSession(config);
+await using var session = new RTSPSession(config);
 
 session.DataReceived += (s, e) =>
 {
@@ -30,9 +30,7 @@ session.DataReceived += (s, e) =>
     }
 };
 
-await session.ConnectAsync();
-await session.SetupAsync("trackID=1", TransportMode.TcpInterleaved);
-await session.PlayAsync();
+await session.StartAsync(); // Connect → OPTIONS → DESCRIBE → SETUP → PLAY
 
 await Task.Delay(Timeout.Infinite);
 ```
@@ -40,10 +38,8 @@ await Task.Delay(Timeout.Infinite);
 ### 示例 2: 保存 H.264 到文件
 
 ```csharp
-using var session = new RTSPSession(config);
-await session.ConnectAsync();
-await session.SetupAsync("trackID=1", TransportMode.TcpInterleaved);
-await session.PlayAsync();
+await using var session = new RTSPSession(config);
+await session.StartAsync(); // Connect → OPTIONS → DESCRIBE → SETUP → PLAY
 
 using var fs = File.Create("output.h264");
 var reader = session.GetMediaFrameReader(0);
@@ -61,6 +57,10 @@ await foreach (var frame in reader.ReadAllAsync())
 ### 示例 3: 音频回传
 
 ```csharp
+using Cyaim.RTSPClient;
+using Cyaim.RTSPClient.Common;
+using Cyaim.RTSPClient.Session;
+
 var config = new RTSPSessionConfig
 {
     Url = "rtsp://192.168.1.127:554",
@@ -69,10 +69,8 @@ var config = new RTSPSessionConfig
     UseBackchannel = true
 };
 
-using var session = new RTSPSession(config);
-await session.ConnectAsync();
-await session.SetupAsync("trackID=3", TransportMode.TcpInterleaved);
-await session.PlayAsync();
+await using var session = new RTSPSession(config);
+await session.StartAsync(); // UseBackchannel = true: backchannel track is set up automatically
 
 byte[] audio = File.ReadAllBytes("audio.g711a");
 await session.SendAudioAsync(audio, 8000, RTPPayloadType.PCMA);
@@ -84,13 +82,11 @@ await session.SendAudioAsync(audio, 8000, RTPPayloadType.PCMA);
 var config = new RTSPSessionConfig
 {
     Url = "rtsp://192.168.1.127:554",
-    TransportMode = TransportMode.UdpUnicast
+    TransportMode = TransportMode.UdpUnicast // UdpMulticast is not supported yet
 };
 
-using var session = new RTSPSession(config);
-await session.ConnectAsync();
-await session.SetupAsync("trackID=1", TransportMode.UdpUnicast);
-await session.PlayAsync();
+await using var session = new RTSPSession(config);
+await session.StartAsync(); // TransportMode.UdpUnicast: SETUP automatically uses UDP
 ```
 
 ---
@@ -110,7 +106,7 @@ var config = new RTSPSessionConfig
     Password = "admin"
 };
 
-using var session = new RTSPSession(config);
+await using var session = new RTSPSession(config);
 
 session.DataReceived += (s, e) =>
 {
@@ -121,9 +117,7 @@ session.DataReceived += (s, e) =>
     }
 };
 
-await session.ConnectAsync();
-await session.SetupAsync("trackID=1", TransportMode.TcpInterleaved);
-await session.PlayAsync();
+await session.StartAsync(); // Connect → OPTIONS → DESCRIBE → SETUP → PLAY
 
 await Task.Delay(Timeout.Infinite);
 ```
@@ -131,10 +125,8 @@ await Task.Delay(Timeout.Infinite);
 ### Example 2: Save H.264 to File
 
 ```csharp
-using var session = new RTSPSession(config);
-await session.ConnectAsync();
-await session.SetupAsync("trackID=1", TransportMode.TcpInterleaved);
-await session.PlayAsync();
+await using var session = new RTSPSession(config);
+await session.StartAsync(); // Connect → OPTIONS → DESCRIBE → SETUP → PLAY
 
 using var fs = File.Create("output.h264");
 var reader = session.GetMediaFrameReader(0);
@@ -152,6 +144,10 @@ await foreach (var frame in reader.ReadAllAsync())
 ### Example 3: Audio Backchannel
 
 ```csharp
+using Cyaim.RTSPClient;
+using Cyaim.RTSPClient.Common;
+using Cyaim.RTSPClient.Session;
+
 var config = new RTSPSessionConfig
 {
     Url = "rtsp://192.168.1.127:554",
@@ -160,10 +156,8 @@ var config = new RTSPSessionConfig
     UseBackchannel = true
 };
 
-using var session = new RTSPSession(config);
-await session.ConnectAsync();
-await session.SetupAsync("trackID=3", TransportMode.TcpInterleaved);
-await session.PlayAsync();
+await using var session = new RTSPSession(config);
+await session.StartAsync(); // UseBackchannel = true: backchannel track is set up automatically
 
 byte[] audio = File.ReadAllBytes("audio.g711a");
 await session.SendAudioAsync(audio, 8000, RTPPayloadType.PCMA);
@@ -175,11 +169,9 @@ await session.SendAudioAsync(audio, 8000, RTPPayloadType.PCMA);
 var config = new RTSPSessionConfig
 {
     Url = "rtsp://192.168.1.127:554",
-    TransportMode = TransportMode.UdpUnicast
+    TransportMode = TransportMode.UdpUnicast // UdpMulticast is not supported yet
 };
 
-using var session = new RTSPSession(config);
-await session.ConnectAsync();
-await session.SetupAsync("trackID=1", TransportMode.UdpUnicast);
-await session.PlayAsync();
+await using var session = new RTSPSession(config);
+await session.StartAsync(); // TransportMode.UdpUnicast: SETUP automatically uses UDP
 ```
