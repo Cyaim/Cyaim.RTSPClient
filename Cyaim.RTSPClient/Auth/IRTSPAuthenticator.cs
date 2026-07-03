@@ -6,6 +6,7 @@ namespace Cyaim.RTSPClient.Auth
     /// RTSP authentication interface.
     /// Implementations handle specific auth schemes (e.g., Digest) for RTSP 401 challenges.
     /// </summary>
+    [System.Obsolete("认证已内建于 RTSPSession（自动 401 重试，支持 Digest qop=auth 与 Basic）。此类型将在后续版本移除。")]
     public interface IRTSPAuthenticator
     {
         /// <summary>

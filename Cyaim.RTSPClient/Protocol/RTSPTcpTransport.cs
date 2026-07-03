@@ -11,6 +11,7 @@ namespace Cyaim.RTSPClient.Protocol
     /// TCP interleaved transport. RTSP and RTP share the same TCP connection.
     /// RTSP requests are sent as text, RTP data is framed with $ + channel + length.
     /// </summary>
+    [Obsolete("RTSPSession 未使用此类型（直接管理 TcpClient）。此类型将在后续版本移除。")]
     public class RTSPTcpTransport : IRTSPTransport
     {
         private TcpClient? _client;

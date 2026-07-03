@@ -8,6 +8,7 @@ namespace Cyaim.RTSPClient.Auth
     /// HTTP Digest authentication for RTSP (RFC 2617).
     /// Extracts realm/nonce from WWW-Authenticate challenges and computes digest responses.
     /// </summary>
+    [Obsolete("认证已内建于 RTSPSession（自动 401 重试，支持 Digest qop=auth 与 Basic）。此类型将在后续版本移除。")]
     public class DigestAuthenticator : IRTSPAuthenticator
     {
         private string? _username;

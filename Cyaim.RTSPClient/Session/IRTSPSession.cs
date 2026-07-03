@@ -23,7 +23,7 @@ namespace Cyaim.RTSPClient.Session
         /// <summary>
         /// RTSP URI
         /// </summary>
-        Uri Uri { get; }
+        Uri? Uri { get; }
 
         /// <summary>
         /// SDP会话描述
@@ -33,7 +33,7 @@ namespace Cyaim.RTSPClient.Session
         /// <summary>
         /// RTSP会话ID
         /// </summary>
-        string SessionId { get; }
+        string? SessionId { get; }
 
         /// <summary>
         /// 服务器超时时间(秒)
@@ -52,22 +52,22 @@ namespace Cyaim.RTSPClient.Session
         /// <summary>
         /// 连接状态变更事件
         /// </summary>
-        event EventHandler<RTSPConnectionStateChangedEventArgs> StateChanged;
+        event EventHandler<RTSPConnectionStateChangedEventArgs>? StateChanged;
 
         /// <summary>
         /// RTP数据接收事件
         /// </summary>
-        event EventHandler<RtpDataReceivedEventArgs> DataReceived;
+        event EventHandler<RtpDataReceivedEventArgs>? DataReceived;
 
         /// <summary>
         /// 错误事件
         /// </summary>
-        event EventHandler<RTSPErrorEventArgs> Error;
+        event EventHandler<RTSPErrorEventArgs>? Error;
 
         /// <summary>
         /// Keep-Alive事件
         /// </summary>
-        event EventHandler<KeepAliveEventArgs> KeepAlive;
+        event EventHandler<KeepAliveEventArgs>? KeepAlive;
 
         #endregion
 

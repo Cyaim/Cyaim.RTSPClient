@@ -13,6 +13,7 @@ namespace Cyaim.RTSPClient.Protocol
     /// RTP over UDP传输实现
     /// RTSP信令使用TCP，RTP/RTCP数据使用UDP
     /// </summary>
+    [Obsolete("RTSPSession 尚不支持 UDP 传输，此类型从未被接线且存在缺陷。此类型将在后续版本移除。")]
     public class RTSPUdpTransport : IRTSPTransport
     {
         private TcpClient? _tcpClient;

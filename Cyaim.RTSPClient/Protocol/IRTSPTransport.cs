@@ -8,6 +8,7 @@ namespace Cyaim.RTSPClient.Protocol
     /// <summary>
     /// Abstracts the underlying transport (TCP interleaved vs UDP).
     /// </summary>
+    [Obsolete("RTSPSession 未使用此传输抽象（直接管理 TcpClient）。此类型将在后续版本移除。")]
     public interface IRTSPTransport : IDisposable
     {
         /// <summary>Gets the transport mode.</summary>
