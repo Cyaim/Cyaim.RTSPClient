@@ -28,7 +28,7 @@ namespace Cyaim.RTSPClient
             StringBuilder req = new StringBuilder();
             req.Append(request.Method);
             req.Append(RTSPConst.Space);
-            req.Append(request.URI);
+            req.Append(Sanitize(request.URI));
             req.Append(RTSPConst.Space);
             req.Append(request.Version);
             req.Append(RTSPConst.CRLF);
@@ -42,8 +42,12 @@ namespace Cyaim.RTSPClient
             request.HeaderMaps["Transport"] = request.Transport ?? string.Empty;
             request.HeaderMaps["Range"] = request.Range ?? string.Empty;
             request.HeaderMaps["Content-Base"] = request.ContentBase ?? string.Empty;
-            request.HeaderMaps["Content-Length"] = request.ContentLength ?? string.Empty;
             request.HeaderMaps["Content-Type"] = request.ContentType ?? string.Empty;
+
+            // Content-Length 始终由内容体的 UTF-8 字节数决定，避免字符数/字节数不一致导致帧错位
+            request.HeaderMaps["Content-Length"] = string.IsNullOrEmpty(request.Content)
+                ? (request.ContentLength ?? string.Empty)
+                : Encoding.UTF8.GetByteCount(request.Content).ToString();
 
             var hmKeys = request.HeaderMaps.Keys;
             foreach (var item in hmKeys)
@@ -56,7 +60,7 @@ namespace Cyaim.RTSPClient
 
                 req.Append(item);
                 req.Append(RTSPConst.HeaderSplit);
-                req.Append(GetRequestHeaderValue(request.Headers, item, headValue));
+                req.Append(Sanitize(headValue));
                 req.Append(RTSPConst.CRLF);
             }
 
@@ -64,30 +68,32 @@ namespace Cyaim.RTSPClient
             {
                 foreach (var item in request.Headers)
                 {
-                    req.Append(item);
+                    req.Append(Sanitize(item));
                     req.Append(RTSPConst.CRLF);
                 }
             }
 
             req.Append(RTSPConst.CRLF);
+
+            // 追加内容体（旧实现设置了 Content-Length 却从不发送 body，服务器会阻塞等待）
+            if (!string.IsNullOrEmpty(request.Content))
+            {
+                req.Append(request.Content);
+            }
+
             return req.ToString();
         }
 
-        private static string GetRequestHeaderValue(List<string>? headers, string headerKey, string value)
+        /// <summary>
+        /// 剔除 CR/LF，防止外部值（如相机下发的控制 URI）注入头部或分裂请求
+        /// </summary>
+        private static string Sanitize(string? value)
         {
             if (string.IsNullOrEmpty(value))
-            {
-                string? keyValue = headers?
-                    .Where(x => x != null)
-                    .Where(x => x.ToLower().Contains(headerKey.ToLower()))
-                    .LastOrDefault();
-
-                return keyValue ?? string.Empty;
-            }
-            else
-            {
-                return value;
-            }
+                return string.Empty;
+            return value!.IndexOfAny(new[] { '\r', '\n' }) < 0
+                ? value
+                : value.Replace("\r", "").Replace("\n", "");
         }
 
         /// <summary>
@@ -166,9 +172,11 @@ namespace Cyaim.RTSPClient
         public List<string>? Headers { get; set; }
 
         /// <summary>
-        /// Request content body
+        /// Request content body.
+        /// Set this to have the body emitted after the headers;
+        /// Content-Length is computed automatically from its UTF-8 byte count.
         /// </summary>
-        public List<string>? Content { get; set; }
+        public string? Content { get; set; }
     }
 
 }

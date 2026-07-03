@@ -61,7 +61,9 @@ namespace Cyaim.RTSPClient
 
                                 if (k.ToLower() == "cseq")
                                 {
-                                    CSeq = Convert.ToInt32(v);
+                                    // 容错：非数字 CSeq 不抛异常（否则单条畸形响应会杀死整个接收循环）
+                                    int.TryParse(v, out int cseq);
+                                    CSeq = cseq;
                                     spaceNum = 0;
                                     break;
                                 }

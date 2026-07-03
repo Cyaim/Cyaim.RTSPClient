@@ -9,6 +9,7 @@ using System.Linq;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace Cyaim.RTSPClient
@@ -17,19 +18,27 @@ namespace Cyaim.RTSPClient
     /// RTSP 会话管理类
     /// 支持完整的 RTSP 协议操作
     /// </summary>
-    public class RTSPSession : IDisposable
+    public partial class RTSPSession : IDisposable, IAsyncDisposable
     {
         #region 字段
 
         private TcpClient? _client;
         private NetworkStream? _tcpStream;
         private readonly ConcurrentDictionary<int, TaskCompletionSource<RTSPResponse>> _pendingRequests = new();
-        private readonly ConcurrentDictionary<int, RTSPResponse> _requestResults = new();
         private readonly ConcurrentDictionary<int, InterleavedChannelInfo> _channelMap = new();
+        private readonly SemaphoreSlim _sendLock = new(1, 1);  // 序列化对 NetworkStream 的并发写入
         private int _cseq;
-        private bool _disposed;
+        private int _disposed;
         private CancellationTokenSource? _receiveCts;
         private Task? _receiveTask;
+
+        // 已 SETUP 的轨道记录（重连时按此恢复）
+        private readonly List<(string channelUri, string transport)> _setupHistory = new();
+        private string? _playRange;
+        private volatile bool _userDisconnect;
+
+        // DESCRIBE 响应中的 Content-Base/Content-Location（RFC 2326 控制 URI 解析基址）
+        private string? _contentBase;
 
         /// <summary>
         /// TCP interleaved 通道注册信息（SETUP 时记录）
@@ -132,6 +141,47 @@ namespace Cyaim.RTSPClient
         /// </summary>
         public bool IsConnected => State >= RTSPConnectionState.Connected;
 
+        /// <summary>
+        /// TCP 连接超时（毫秒），默认 10 秒
+        /// </summary>
+        public int ConnectTimeoutMs { get; set; } = 10000;
+
+        /// <summary>
+        /// 是否自动发送 keep-alive（按服务器 Session timeout 的一半间隔发送 GET_PARAMETER）。
+        /// PLAY 成功后自动启动，默认开启。
+        /// </summary>
+        public bool AutoKeepAlive { get; set; } = true;
+
+        /// <summary>
+        /// 是否在接收循环意外断开后自动重连并恢复 SETUP/PLAY，默认关闭
+        /// </summary>
+        public bool AutoReconnect { get; set; }
+
+        /// <summary>
+        /// 自动重连最大尝试次数（0 = 无限重试）
+        /// </summary>
+        public int MaxReconnectAttempts { get; set; } = 5;
+
+        /// <summary>
+        /// 自动重连初始间隔（毫秒），按指数退避增长，上限 30 秒
+        /// </summary>
+        public int ReconnectDelayMs { get; set; } = 2000;
+
+        /// <summary>
+        /// 是否自动发送 RTCP Receiver Report（每 5 秒，部分服务器/相机依赖 RTCP 保活），默认开启
+        /// </summary>
+        public bool EnableRtcp { get; set; } = true;
+
+        /// <summary>
+        /// RTP 包分发队列容量。消费者处理不及时时丢弃最旧的包而不是阻塞 TCP 读取。
+        /// </summary>
+        public int ReceiveQueueCapacity { get; set; } = 4096;
+
+        /// <summary>
+        /// 因消费者处理过慢而被丢弃的 RTP 包计数
+        /// </summary>
+        public long PacketsDropped => Interlocked.Read(ref _packetsDropped);
+
         #endregion
 
         #region 事件
@@ -196,24 +246,7 @@ namespace Cyaim.RTSPClient
 
         private void ConnectInternal()
         {
-            if (Uri == null)
-                throw new InvalidOperationException("URI not set");
-
-            try
-            {
-                SetState(RTSPConnectionState.Connecting);
-                _client = new TcpClient(Uri.Host, Uri.Port);
-                _tcpStream = _client.GetStream();
-                SetState(RTSPConnectionState.Connected);
-                StartReceiveLoop();
-            }
-            catch (Exception ex)
-            {
-                LastException = ex;
-                SetState(RTSPConnectionState.Disconnected);
-                OnError(ex);
-                throw;
-            }
+            ConnectInternalAsync(CancellationToken.None).GetAwaiter().GetResult();
         }
 
         private async Task ConnectInternalAsync(CancellationToken ct)
@@ -224,9 +257,28 @@ namespace Cyaim.RTSPClient
             try
             {
                 SetState(RTSPConnectionState.Connecting);
-                _client = new TcpClient();
-                await _client.ConnectAsync(Uri.Host, Uri.Port);
-                _tcpStream = _client.GetStream();
+                _userDisconnect = false;
+
+                var client = new TcpClient { NoDelay = true };
+                _client = client;
+
+                // TcpClient.ConnectAsync(host, port) 在 netstandard2.1 上不接受取消令牌，
+                // 用超时 + 调用方 ct 联合控制，避免卡在 OS SYN 超时（约 20 秒）
+                var connectTask = client.ConnectAsync(Uri.Host, Uri.Port <= 0 ? 554 : Uri.Port);
+                var delayTask = Task.Delay(Math.Max(1000, ConnectTimeoutMs), ct);
+                var finished = await Task.WhenAny(connectTask, delayTask).ConfigureAwait(false);
+
+                if (finished != connectTask)
+                {
+                    try { client.Dispose(); } catch { }
+                    ct.ThrowIfCancellationRequested();
+                    throw new Exceptions.RTSPTimeoutException(
+                        $"Connect to {Uri.Host}:{Uri.Port} timed out after {ConnectTimeoutMs}ms");
+                }
+
+                await connectTask.ConfigureAwait(false); // 传播连接异常
+
+                _tcpStream = client.GetStream();
                 SetState(RTSPConnectionState.Connected);
                 StartReceiveLoop();
             }
@@ -247,21 +299,27 @@ namespace Cyaim.RTSPClient
             if (State == RTSPConnectionState.Disconnected)
                 return;
 
+            _userDisconnect = true;  // 主动断开，不触发自动重连
             SetState(RTSPConnectionState.Disconnecting);
+
+            StopKeepAlive();
+            StopRtcp();
 
             try
             {
-                // 尝试发送 TEARDOWN
-                if (Uri != null && SessionId != null)
+                // 尝试发送 TEARDOWN（限时 2 秒，不让优雅关闭拖成长阻塞）
+                if (Uri != null && SessionId != null && _tcpStream != null)
                 {
                     try
                     {
-                        await TeardownAsync(ct: ct);
+                        using var teardownCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        teardownCts.CancelAfter(2000);
+                        await TeardownAsync(ct: teardownCts.Token).ConfigureAwait(false);
                     }
                     catch { }
                 }
 
-                StopReceiveLoop();
+                await StopReceiveLoopAsync().ConfigureAwait(false);
                 _tcpStream?.Close();
                 _client?.Close();
             }
@@ -271,7 +329,16 @@ namespace Cyaim.RTSPClient
                 _client = null;
                 SessionId = null;
                 SDP = null;
+                _contentBase = null;
                 _channelMap.Clear();
+                _rtpTrackers.Clear();
+                lock (_setupHistory)
+                {
+                    _setupHistory.Clear();
+                }
+                _playRange = null;
+                CleanupFacade();
+                CleanupUdpTransports();
                 SetState(RTSPConnectionState.Disconnected);
             }
         }
@@ -298,18 +365,54 @@ namespace Cyaim.RTSPClient
         private void StartReceiveLoop()
         {
             _receiveCts = new CancellationTokenSource();
-            _receiveTask = Task.Run(() => ReceiveLoopAsync(_receiveCts.Token));
+            var ct = _receiveCts.Token;
+            var channel = StartPacketPump(ct);
+            _receiveTask = Task.Run(() => ReceiveLoopAsync(channel, ct));
         }
 
         private void StopReceiveLoop()
         {
             _receiveCts?.Cancel();
-            _receiveTask?.Wait(TimeSpan.FromSeconds(5));
+            try
+            {
+                _receiveTask?.Wait(TimeSpan.FromSeconds(5));
+            }
+            catch (AggregateException) { }
             _receiveCts?.Dispose();
             _receiveCts = null;
         }
 
-        private async Task ReceiveLoopAsync(CancellationToken ct)
+        private async Task StopReceiveLoopAsync()
+        {
+            _receiveCts?.Cancel();
+            var task = _receiveTask;
+            if (task != null)
+            {
+                try
+                {
+                    await Task.WhenAny(task, Task.Delay(5000)).ConfigureAwait(false);
+                }
+                catch { }
+            }
+            _receiveCts?.Dispose();
+            _receiveCts = null;
+        }
+
+        /// <summary>
+        /// 让所有等待响应的请求立即失败（连接已断，无需干等超时）
+        /// </summary>
+        private void FailPendingRequests(Exception reason)
+        {
+            foreach (var key in _pendingRequests.Keys)
+            {
+                if (_pendingRequests.TryRemove(key, out var tcs))
+                {
+                    tcs.TrySetException(reason);
+                }
+            }
+        }
+
+        private async Task ReceiveLoopAsync(Channel<Rtp.RTPPacket> myChannel, CancellationToken ct)
         {
             if (_tcpStream == null) return;
 
@@ -331,7 +434,7 @@ namespace Cyaim.RTSPClient
                         Array.Resize(ref buffer, buffer.Length * 2);
                     }
 
-                    int bytesRead = await _tcpStream.ReadAsync(buffer, buffered, buffer.Length - buffered, ct);
+                    int bytesRead = await _tcpStream.ReadAsync(buffer, buffered, buffer.Length - buffered, ct).ConfigureAwait(false);
                     if (bytesRead == 0)
                     {
                         // 服务器关闭连接
@@ -378,15 +481,22 @@ namespace Cyaim.RTSPClient
                             string msg = Encoding.UTF8.GetString(buffer, offset, totalLength);
                             var rawBytes = new byte[totalLength];
                             Array.Copy(buffer, offset, rawBytes, 0, totalLength);
-                            var response = new RTSPResponse(msg, rawBytes);
 
-                            // 完成等待的请求
-                            if (_pendingRequests.TryRemove(response.CSeq, out var tcs))
+                            // 单条畸形响应只丢弃该条消息，不终止整个会话
+                            try
                             {
-                                tcs.TrySetResult(response);
-                            }
+                                var response = new RTSPResponse(msg, rawBytes);
 
-                            _requestResults.AddOrUpdate(response.CSeq, response, (_, _) => response);
+                                // 完成等待的请求
+                                if (_pendingRequests.TryRemove(response.CSeq, out var tcs))
+                                {
+                                    tcs.TrySetResult(response);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                LastException = ex;
+                            }
 
                             offset += totalLength;
                         }
@@ -412,33 +522,60 @@ namespace Cyaim.RTSPClient
             }
             finally
             {
-                if (State != RTSPConnectionState.Disconnecting &&
-                    State != RTSPConnectionState.Disconnected)
+                // 关闭本循环自己的泵通道
+                myChannel.Writer.TryComplete();
+
+                // 重连场景下新循环可能已经接管：过期循环不得清理全局状态
+                //（否则会关掉新泵、误置 Disconnected、误杀新连接的挂起请求）
+                if (ReferenceEquals(myChannel, _packetChannel))
                 {
-                    SetState(RTSPConnectionState.Disconnected);
+                    bool wasStreaming = State == RTSPConnectionState.Playing || State == RTSPConnectionState.Setup;
+
+                    // 连接已断：让所有等待响应的调用立即失败，而不是干等超时
+                    FailPendingRequests(new Exceptions.RTSPConnectionException("Connection closed"));
+                    StopKeepAlive();
+                    StopRtcp();
+
+                    if (State != RTSPConnectionState.Disconnecting &&
+                        State != RTSPConnectionState.Disconnected)
+                    {
+                        SetState(RTSPConnectionState.Disconnected);
+                    }
+
+                    // 意外断开且启用自动重连时，尝试恢复会话（含 SETUP/PLAY）
+                    if (AutoReconnect && wasStreaming && !_userDisconnect && _disposed == 0)
+                    {
+                        _ = Task.Run(() => AutoReconnectLoopAsync());
+                    }
                 }
             }
         }
 
+        private static readonly byte[] CrlfCrlf = { 0x0D, 0x0A, 0x0D, 0x0A };
+        private static readonly byte[] LfLf = { 0x0A, 0x0A };
+
         /// <summary>
-        /// 字节级查找头部结束标记（\r\n\r\n 或 \n\n）
+        /// 字节级查找头部结束标记（\r\n\r\n 或 \n\n）。
+        /// 使用 Span.IndexOf（运行时内部 SIMD 向量化）替代逐字节扫描。
         /// </summary>
         /// <returns>头部结束位置（buffer 内绝对偏移），未找到返回 -1</returns>
         private static int FindHeaderEnd(byte[] buffer, int offset, int end, out int markerLength)
         {
-            for (int i = offset; i < end - 1; i++)
+            var span = new ReadOnlySpan<byte>(buffer, offset, end - offset);
+
+            int crlfIndex = span.IndexOf(CrlfCrlf);
+            int lflfIndex = span.IndexOf(LfLf);
+
+            // 取更早出现的标记（\n\n 是 \r\n\r\n 的子串，位置相同时取 4 字节标记）
+            if (crlfIndex >= 0 && (lflfIndex < 0 || crlfIndex <= lflfIndex - 1))
             {
-                if (buffer[i] == (byte)'\r' && i + 3 < end &&
-                    buffer[i + 1] == (byte)'\n' && buffer[i + 2] == (byte)'\r' && buffer[i + 3] == (byte)'\n')
-                {
-                    markerLength = 4;
-                    return i;
-                }
-                if (buffer[i] == (byte)'\n' && buffer[i + 1] == (byte)'\n')
-                {
-                    markerLength = 2;
-                    return i;
-                }
+                markerLength = 4;
+                return offset + crlfIndex;
+            }
+            if (lflfIndex >= 0)
+            {
+                markerLength = 2;
+                return offset + lflfIndex;
             }
 
             markerLength = 0;
@@ -467,7 +604,10 @@ namespace Cyaim.RTSPClient
             if (_channelMap.TryGetValue(channel, out var info))
             {
                 if (info.IsRtcp)
+                {
+                    HandleRtcpFrame(channel, info.TrackId, data);
                     return; // RTCP 帧不作为 RTP 数据抛出
+                }
                 trackId = info.TrackId;
                 streamType = info.StreamType;
             }
@@ -475,7 +615,10 @@ namespace Cyaim.RTSPClient
             {
                 // 未注册的通道按约定推断：偶数=RTP，奇数=RTCP；track0=视频，其余=音频
                 if (channel % 2 != 0)
+                {
+                    HandleRtcpFrame(channel, channel / 2, data);
                     return;
+                }
                 trackId = channel / 2;
                 streamType = trackId == 0 ? StreamType.Video : StreamType.Audio;
             }
@@ -490,7 +633,13 @@ namespace Cyaim.RTSPClient
                 return; // 丢弃无法解析的包
             }
 
-            DataReceived?.Invoke(this, new RtpDataReceivedEventArgs(packet));
+            // 更新 RTCP 接收统计（RR 报告用）
+            UpdateReceptionStats(channel, in packet);
+
+            // 写入有界队列由泵线程分发：
+            // 1) 消费者慢时丢最旧的包而不是让 TCP 窗口填满拖垮整条连接
+            // 2) 消费者异常被隔离，不会杀死接收循环
+            EnqueuePacket(in packet);
         }
 
         #endregion
@@ -498,47 +647,89 @@ namespace Cyaim.RTSPClient
         #region 发送方法
 
         /// <summary>
-        /// 发送原始数据
+        /// 发送原始数据（与 RTSP 请求共用发送锁，避免并发写坏 TCP 流）
         /// </summary>
         public async Task SendRawAsync(byte[] data, CancellationToken ct = default)
         {
-            if (_tcpStream == null)
-                throw new InvalidOperationException("Not connected");
+            var stream = _tcpStream ?? throw new InvalidOperationException("Not connected");
 
-            await _tcpStream.WriteAsync(data, 0, data.Length, ct);
+            await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await stream.WriteAsync(data, 0, data.Length, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                _sendLock.Release();
+            }
         }
 
         /// <summary>
-        /// 发送 RTSP 请求并等待响应
+        /// 发送 RTSP 请求并等待响应。
+        /// 收到 401 且已配置凭据时自动携带认证信息重试一次（Digest/Basic）。
         /// </summary>
         public async Task<RTSPResponse> SendRequestAsync(RTSPRequest request, CancellationToken ct = default)
         {
-            if (_tcpStream == null)
-                throw new InvalidOperationException("Not connected");
+            var response = await SendRequestOnceAsync(request, ct).ConfigureAwait(false);
+
+            // 401 自动重试：解析质询、更新 Authorization、原请求重发一次
+            if (response.StatusCode == "401" && UserName != null && Password != null)
+            {
+                HandleAuthChallenge(response);
+                UpdateAuthorization(request.Method, request.URI);
+                if (Authorization != null)
+                {
+                    request.CSeq = Interlocked.Increment(ref _cseq);
+                    request.Authorization = Authorization;
+                    response = await SendRequestOnceAsync(request, ct).ConfigureAwait(false);
+                }
+            }
+
+            return response;
+        }
+
+        private async Task<RTSPResponse> SendRequestOnceAsync(RTSPRequest request, CancellationToken ct)
+        {
+            var stream = _tcpStream ?? throw new InvalidOperationException("Not connected");
 
             // 创建 TCS 用于等待响应
             var tcs = new TaskCompletionSource<RTSPResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
             _pendingRequests[request.CSeq] = tcs;
 
-            // 发送请求
-            string req = RTSPRequest.GetRequest(request);
-            byte[] data = Encoding.UTF8.GetBytes(req);
-            await _tcpStream.WriteAsync(data, 0, data.Length, ct);
-
-            // 等待响应（带超时）
-            using var timeoutCts = new CancellationTokenSource(WaitResponseTimeout);
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-
             try
             {
-                // 注册取消回调
+                // 发送请求（含内容体，GetRequest 会自动补齐 UTF-8 字节长度的 Content-Length）
+                string req = RTSPRequest.GetRequest(request);
+                byte[] data = Encoding.UTF8.GetBytes(req);
+
+                await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    await stream.WriteAsync(data, 0, data.Length, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _sendLock.Release();
+                }
+
+                // 等待响应（带超时）
+                using var timeoutCts = new CancellationTokenSource(WaitResponseTimeout);
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
                 using var reg = linkedCts.Token.Register(() => tcs.TrySetCanceled());
-                return await tcs.Task;
+
+                try
+                {
+                    return await tcs.Task.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    throw new Exceptions.RTSPTimeoutException($"RTSP response timeout for CSeq {request.CSeq}");
+                }
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            finally
             {
+                // 任何退出路径（超时/取消/发送异常）都清理挂起表，避免泄漏
                 _pendingRequests.TryRemove(request.CSeq, out _);
-                throw new TimeoutException($"RTSP response timeout for CSeq {request.CSeq}");
             }
         }
 
@@ -552,12 +743,16 @@ namespace Cyaim.RTSPClient
         public async Task<RTSPResponse> OptionsAsync(CancellationToken ct = default)
         {
             var request = CreateRequest("OPTIONS");
-            var response = await SendRequestAsync(request, ct);
+
+            // 已有质询信息时带上认证（部分服务器在 OPTIONS 上也要求认证）
+            UpdateAuthorization(request.Method);
+            request.Authorization = Authorization;
+
+            var response = await SendRequestAsync(request, ct).ConfigureAwait(false);
 
             if (response.StatusCode == "200")
             {
-                var pub = response.Headers.FirstOrDefault(x => x.Key == "Public");
-                Public = pub.Value;
+                Public = GetHeader(response, "Public");
             }
 
             return response;
@@ -573,11 +768,25 @@ namespace Cyaim.RTSPClient
             if (useBackchannel)
                 request.Require = OnvifBackChannel;
 
-            var response = await SendRequestAsync(request, ct);
+            UpdateAuthorization(request.Method);
+            request.Authorization = Authorization;
+
+            var response = await SendRequestAsync(request, ct).ConfigureAwait(false);
 
             if (response.StatusCode == "200")
             {
-                SDP = SDPParser.Parse(response.Response);
+                // RFC 2326：相对控制 URI 的解析基址优先级 Content-Base > Content-Location > 请求 URI
+                _contentBase = GetHeader(response, "Content-Base") ?? GetHeader(response, "Content-Location");
+
+                try
+                {
+                    SDP = SDPParser.Parse(response.Response);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exceptions.RTSPProtocolException("Failed to parse SDP from DESCRIBE response", ex);
+                }
+
                 if (useBackchannel)
                 {
                     HasBackChannelSupported = SDP.GetBackChannel() != null;
@@ -585,7 +794,7 @@ namespace Cyaim.RTSPClient
             }
             else if (response.StatusCode == "401")
             {
-                // 需要认证
+                // SendRequestAsync 已自动重试过；仍 401 说明凭据错误或未设置，记录质询供手动处理
                 HandleAuthChallenge(response);
             }
 
@@ -593,9 +802,27 @@ namespace Cyaim.RTSPClient
         }
 
         /// <summary>
+        /// 大小写不敏感地读取响应头
+        /// </summary>
+        private static string? GetHeader(RTSPResponse response, string name)
+        {
+            foreach (var header in response.Headers)
+            {
+                if (header.Key.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    return header.Value;
+            }
+            return null;
+        }
+
+        /// <summary>
         /// SETUP - 设置媒体传输通道
         /// </summary>
-        public async Task<RTSPResponse> SetupAsync(string channelUri, string transport, bool useBackchannel = false, CancellationToken ct = default)
+        public Task<RTSPResponse> SetupAsync(string channelUri, string transport, bool useBackchannel = false, CancellationToken ct = default)
+        {
+            return SetupInternalAsync(channelUri, transport, recordHistory: true, useBackchannel, ct);
+        }
+
+        private async Task<RTSPResponse> SetupInternalAsync(string channelUri, string transport, bool recordHistory, bool useBackchannel, CancellationToken ct)
         {
             if (Uri == null)
                 throw new InvalidOperationException("Not connected");
@@ -606,34 +833,48 @@ namespace Cyaim.RTSPClient
             if (useBackchannel)
                 request.Require = OnvifBackChannel;
 
-            UpdateAuthorization(request.Method);
+            UpdateAuthorization(request.Method, request.URI);
             request.Authorization = Authorization;
 
-            var response = await SendRequestAsync(request, ct);
+            var response = await SendRequestAsync(request, ct).ConfigureAwait(false);
             UpdateSessionFromResponse(response);
 
             if (response.StatusCode == "200")
             {
                 RegisterInterleavedChannels(channelUri, transport, response);
+
+                if (recordHistory)
+                {
+                    // 记录 SETUP 参数，自动重连时按序重放
+                    lock (_setupHistory)
+                    {
+                        _setupHistory.RemoveAll(x => x.channelUri == channelUri);
+                        _setupHistory.Add((channelUri, transport));
+                    }
+                }
             }
 
             return response;
         }
 
         /// <summary>
-        /// 拼接 SETUP URI：控制属性可能是绝对 URL 或相对路径
+        /// 拼接 SETUP URI（RFC 2326 C.1.1）：
+        /// - a=control:* 表示使用聚合基址本身
+        /// - 绝对 URL 直接使用
+        /// - 相对路径基于 Content-Base > Content-Location > 请求 URI 解析
         /// </summary>
         private string BuildSetupUri(string channelUri)
         {
-            if (string.IsNullOrEmpty(channelUri))
-                return Uri!.AbsoluteUri;
+            string baseUri = _contentBase ?? Uri!.AbsoluteUri;
+
+            if (string.IsNullOrEmpty(channelUri) || channelUri == "*")
+                return baseUri;
 
             // 绝对 URL 直接使用
             if (channelUri.StartsWith("rtsp://", StringComparison.OrdinalIgnoreCase) ||
                 channelUri.StartsWith("rtsps://", StringComparison.OrdinalIgnoreCase))
                 return channelUri;
 
-            string baseUri = Uri!.AbsoluteUri;
             if (baseUri.EndsWith("/") || channelUri.StartsWith("/"))
                 return baseUri + channelUri;
             return baseUri + "/" + channelUri;
@@ -693,6 +934,12 @@ namespace Cyaim.RTSPClient
             _channelMap[rtpChannel] = new InterleavedChannelInfo(trackId, streamType, isRtcp: false);
             if (rtcpChannel >= 0)
                 _channelMap[rtcpChannel] = new InterleavedChannelInfo(trackId, streamType, isRtcp: true);
+
+            // 注册 RTCP 接收统计上下文（时钟频率取自 SDP，视频默认 90000）
+            int clockRate = media?.GetPrimaryCodec()?.ClockRate ?? 0;
+            if (clockRate <= 0)
+                clockRate = streamType == StreamType.Video ? 90000 : 8000;
+            RegisterRtpTracker((byte)rtpChannel, (byte)(rtcpChannel >= 0 ? rtcpChannel : rtpChannel + 1), trackId, clockRate);
         }
 
         /// <summary>
@@ -713,12 +960,17 @@ namespace Cyaim.RTSPClient
             UpdateAuthorization(request.Method);
             request.Authorization = Authorization;
 
-            var response = await SendRequestAsync(request, ct);
+            var response = await SendRequestAsync(request, ct).ConfigureAwait(false);
             UpdateSessionFromResponse(response);
 
             if (response.StatusCode == "200")
             {
+                _playRange = range;
                 SetState(RTSPConnectionState.Playing);
+
+                // 自动保活与 RTCP RR（可通过 AutoKeepAlive/EnableRtcp 关闭）
+                StartKeepAlive();
+                StartRtcp();
             }
 
             return response;
@@ -757,15 +1009,26 @@ namespace Cyaim.RTSPClient
                 throw new InvalidOperationException("Not connected");
 
             var request = CreateRequest("TEARDOWN");
-            request.URI = Uri.AbsoluteUri + (channelUri ?? "");
+            request.URI = channelUri == null ? (_contentBase ?? Uri.AbsoluteUri) : BuildSetupUri(channelUri);
             request.Session = SessionId;
             if (useBackchannel)
                 request.Require = OnvifBackChannel;
 
-            UpdateAuthorization(request.Method);
+            UpdateAuthorization(request.Method, request.URI);
             request.Authorization = Authorization;
 
-            var response = await SendRequestAsync(request, ct);
+            var response = await SendRequestAsync(request, ct).ConfigureAwait(false);
+
+            // 会话已拆除：清理重连恢复所需的状态
+            if (channelUri == null)
+            {
+                lock (_setupHistory)
+                {
+                    _setupHistory.Clear();
+                }
+                _playRange = null;
+            }
+
             return response;
         }
 
@@ -783,19 +1046,19 @@ namespace Cyaim.RTSPClient
             if (parameters != null && parameters.Length > 0)
             {
                 request.ContentType = "text/parameters";
-                // 构建参数体
+                // 内容体由 GetRequest 统一追加并按 UTF-8 字节数计算 Content-Length
                 var sb = new StringBuilder();
                 foreach (var p in parameters)
                 {
-                    sb.AppendLine(p);
+                    sb.Append(p).Append("\r\n");
                 }
-                request.ContentLength = sb.Length.ToString();
+                request.Content = sb.ToString();
             }
 
             UpdateAuthorization(request.Method);
             request.Authorization = Authorization;
 
-            return await SendRequestAsync(request, ct);
+            return await SendRequestAsync(request, ct).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -813,14 +1076,14 @@ namespace Cyaim.RTSPClient
             var sb = new StringBuilder();
             foreach (var kvp in parameters)
             {
-                sb.AppendLine($"{kvp.Key}: {kvp.Value}");
+                sb.Append(kvp.Key).Append(": ").Append(kvp.Value).Append("\r\n");
             }
-            request.ContentLength = sb.Length.ToString();
+            request.Content = sb.ToString();
 
             UpdateAuthorization(request.Method);
             request.Authorization = Authorization;
 
-            return await SendRequestAsync(request, ct);
+            return await SendRequestAsync(request, ct).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -833,12 +1096,12 @@ namespace Cyaim.RTSPClient
 
             var request = CreateRequest("ANNOUNCE");
             request.ContentType = "application/sdp";
-            request.ContentLength = sdpContent.Length.ToString();
+            request.Content = sdpContent;  // 旧实现只发 Content-Length 不发 SDP 本体，服务器会等 body 卡死
 
             UpdateAuthorization(request.Method);
             request.Authorization = Authorization;
 
-            return await SendRequestAsync(request, ct);
+            return await SendRequestAsync(request, ct).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -868,36 +1131,25 @@ namespace Cyaim.RTSPClient
             UserName = username;
             Password = password;
 
-            // 1. OPTIONS
-            var optionsResponse = await OptionsAsync(ct);
+            // 1. OPTIONS（SendRequestAsync 对 401 已自动携带凭据重试，Digest/Basic 均支持）
+            var optionsResponse = await OptionsAsync(ct).ConfigureAwait(false);
+            if (optionsResponse.StatusCode == "401")
+            {
+                throw new Exceptions.RTSPAuthenticationException(
+                    "Authentication failed for OPTIONS (check username/password)");
+            }
             if (optionsResponse.StatusCode != "200")
             {
-                throw new Exception("OPTIONS request failed");
+                throw new Exceptions.RTSPProtocolException(
+                    $"OPTIONS request failed with status {optionsResponse.StatusCode} {optionsResponse.StatusMsg}");
             }
 
             // 2. DESCRIBE
-            var describeResponse = await DescribeAsync(useBackchannel, ct);
-
+            var describeResponse = await DescribeAsync(useBackchannel, ct).ConfigureAwait(false);
             if (describeResponse.StatusCode == "401")
             {
-                // 需要 Digest 认证
-                HandleAuthChallenge(describeResponse);
-
-                // 重新发送 DESCRIBE
-                var request = CreateRequest("DESCRIBE");
-                request.Accept = "application/sdp";
-                if (useBackchannel)
-                    request.Require = OnvifBackChannel;
-
-                UpdateAuthorization(request.Method);
-                request.Authorization = Authorization;
-
-                describeResponse = await SendRequestAsync(request, ct);
-
-                if (describeResponse.StatusCode == "200")
-                {
-                    SDP = SDPParser.Parse(describeResponse.Response);
-                }
+                throw new Exceptions.RTSPAuthenticationException(
+                    "Authentication failed for DESCRIBE (check username/password)");
             }
 
             if (useBackchannel)
@@ -916,11 +1168,23 @@ namespace Cyaim.RTSPClient
             try
             {
                 var sw = Stopwatch.StartNew();
-                var response = await GetParameterAsync(ct: ct);
+
+                // 优先 GET_PARAMETER，服务器不支持时退回 OPTIONS（同样能刷新会话超时）
+                RTSPResponse response;
+                if (Public == null || Public.IndexOf("GET_PARAMETER", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    response = await GetParameterAsync(ct: ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    response = await OptionsAsync(ct).ConfigureAwait(false);
+                }
+
                 sw.Stop();
 
-                KeepAlive?.Invoke(this, new KeepAliveEventArgs(response.StatusCode == "200", (int)sw.ElapsedMilliseconds));
-                return response.StatusCode == "200";
+                bool ok = response.StatusCode == "200";
+                KeepAlive?.Invoke(this, new KeepAliveEventArgs(ok, (int)sw.ElapsedMilliseconds));
+                return ok;
             }
             catch (Exception ex)
             {
@@ -941,39 +1205,196 @@ namespace Cyaim.RTSPClient
                 Method = method,
                 URI = Uri?.AbsoluteUri ?? "",
                 Version = "RTSP/1.0",
+                UserAgent = UserAgent,
                 CSeq = Interlocked.Increment(ref _cseq)
             };
         }
 
+        // Digest 质询参数（RFC 2617/7616）
+        private string? _authQop;
+        private string? _authOpaque;
+        private string? _authAlgorithm;
+        private bool _useBasicAuth;
+        private int _nonceCount;
+
         private void HandleAuthChallenge(RTSPResponse response)
         {
-            var auth = response.Headers.FirstOrDefault(x => x.Key == "WWW-Authenticate");
-            if (auth.Value == null || !auth.Value.StartsWith("Digest"))
+            // 可能同时存在 Digest 和 Basic 两条质询，优先 Digest
+            string? digestChallenge = null;
+            string? basicChallenge = null;
+
+            foreach (var header in response.Headers)
             {
-                throw new Exception("Server auth mode not Digest");
+                if (!header.Key.Equals("WWW-Authenticate", StringComparison.OrdinalIgnoreCase) || header.Value == null)
+                    continue;
+
+                if (header.Value.StartsWith("Digest", StringComparison.OrdinalIgnoreCase))
+                    digestChallenge ??= header.Value;
+                else if (header.Value.StartsWith("Basic", StringComparison.OrdinalIgnoreCase))
+                    basicChallenge ??= header.Value;
             }
 
-            string realm = "RTSP SERVER";
-            string nonce = "";
-            GetDigestParams(ref realm, ref nonce, auth.Value);
-
-            Realm = realm;
-            Nonce = nonce;
+            if (digestChallenge != null)
+            {
+                _useBasicAuth = false;
+                var p = ParseChallengeParams(digestChallenge.Substring("Digest".Length));
+                Realm = p.TryGetValue("realm", out var realm) ? realm : "RTSP SERVER";
+                if (p.TryGetValue("nonce", out var nonce))
+                {
+                    // 新 nonce 重置 nc 计数
+                    if (nonce != Nonce)
+                        _nonceCount = 0;
+                    Nonce = nonce;
+                }
+                _authQop = p.TryGetValue("qop", out var qop) ? qop : null;
+                _authOpaque = p.TryGetValue("opaque", out var opaque) ? opaque : null;
+                _authAlgorithm = p.TryGetValue("algorithm", out var alg) ? alg : null;
+            }
+            else if (basicChallenge != null)
+            {
+                _useBasicAuth = true;
+                var p = ParseChallengeParams(basicChallenge.Substring("Basic".Length));
+                Realm = p.TryGetValue("realm", out var realm) ? realm : "RTSP SERVER";
+            }
+            else
+            {
+                throw new Exceptions.RTSPAuthenticationException(
+                    "Server offered no supported authentication scheme (expected Digest or Basic)");
+            }
         }
 
-        private void UpdateAuthorization(string method)
+        /// <summary>
+        /// 解析质询参数（key="value" 或 key=value，逗号分隔；值内允许逗号内嵌于引号）
+        /// </summary>
+        private static Dictionary<string, string> ParseChallengeParams(string challenge)
         {
-            if (UserName != null && Password != null && Realm != null && Nonce != null && Uri != null)
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            int i = 0;
+            while (i < challenge.Length)
             {
-                Authorization = AuthorizationDigest(UserName, Password, Uri.AbsoluteUri, Realm, Nonce, method);
+                // 跳过分隔符
+                while (i < challenge.Length && (challenge[i] == ',' || char.IsWhiteSpace(challenge[i])))
+                    i++;
+
+                int eq = challenge.IndexOf('=', i);
+                if (eq < 0) break;
+
+                string key = challenge.Substring(i, eq - i).Trim();
+                i = eq + 1;
+
+                string value;
+                if (i < challenge.Length && challenge[i] == '"')
+                {
+                    int endQuote = challenge.IndexOf('"', i + 1);
+                    if (endQuote < 0) endQuote = challenge.Length;
+                    value = challenge.Substring(i + 1, endQuote - i - 1);
+                    i = endQuote + 1;
+                }
+                else
+                {
+                    int end = challenge.IndexOf(',', i);
+                    if (end < 0) end = challenge.Length;
+                    value = challenge.Substring(i, end - i).Trim();
+                    i = end;
+                }
+
+                if (key.Length > 0)
+                    result[key] = value;
             }
+            return result;
+        }
+
+        private void UpdateAuthorization(string method, string? uri = null)
+        {
+            if (UserName == null || Password == null)
+                return;
+
+            string requestUri = uri ?? Uri?.AbsoluteUri ?? "/";
+
+            if (_useBasicAuth)
+            {
+                string token = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{UserName}:{Password}"));
+                Authorization = $"Basic {token}";
+                return;
+            }
+
+            if (Realm == null || Nonce == null)
+                return;
+
+            Authorization = BuildDigestAuthorization(method, requestUri);
+        }
+
+        /// <summary>
+        /// 构造 Digest Authorization 头（支持 RFC 2617 qop=auth 与 RFC 7616 SHA-256）
+        /// </summary>
+        private string BuildDigestAuthorization(string method, string uri)
+        {
+            bool useSha256 = _authAlgorithm != null &&
+                _authAlgorithm.StartsWith("SHA-256", StringComparison.OrdinalIgnoreCase);
+            Func<string, string> h = useSha256
+                ? s => s.Sha256().ToLower()
+                : s => s.Md532().ToLower();
+
+            string ha1 = h($"{UserName}:{Realm}:{Password}");
+            if (_authAlgorithm != null && _authAlgorithm.EndsWith("-sess", StringComparison.OrdinalIgnoreCase))
+            {
+                // MD5-sess / SHA-256-sess
+                ha1 = h($"{ha1}:{Nonce}:{_sessCnonce ??= Guid.NewGuid().ToString("N").Substring(0, 16)}");
+            }
+            string ha2 = h($"{method}:{uri}");
+
+            var sb = new StringBuilder(256);
+            sb.Append("Digest username=\"").Append(UserName)
+              .Append("\", realm=\"").Append(Realm)
+              .Append("\", nonce=\"").Append(Nonce)
+              .Append("\", uri=\"").Append(uri).Append('"');
+
+            // 服务器声明 qop 时必须携带 qop/nc/cnonce 参与摘要
+            if (_authQop != null && _authQop.Split(',').Select(x => x.Trim())
+                    .Contains("auth", StringComparer.OrdinalIgnoreCase))
+            {
+                string cnonce = Guid.NewGuid().ToString("N").Substring(0, 16);
+                string nc = Interlocked.Increment(ref _nonceCount).ToString("x8");
+                string response = ComputeDigestResponse(ha1, ha2, Nonce!, nc, cnonce, "auth", h);
+
+                sb.Append(", qop=auth, nc=").Append(nc)
+                  .Append(", cnonce=\"").Append(cnonce)
+                  .Append("\", response=\"").Append(response).Append('"');
+            }
+            else
+            {
+                string response = ComputeDigestResponse(ha1, ha2, Nonce!, null, null, null, h);
+                sb.Append(", response=\"").Append(response).Append('"');
+            }
+
+            if (_authOpaque != null)
+                sb.Append(", opaque=\"").Append(_authOpaque).Append('"');
+            if (_authAlgorithm != null)
+                sb.Append(", algorithm=").Append(_authAlgorithm);
+
+            return sb.ToString();
+        }
+
+        private string? _sessCnonce;
+
+        /// <summary>
+        /// RFC 2617/7616 摘要计算核心（qop 为 null 时按 RFC 2069 旧格式）。
+        /// 独立出来便于用标准测试向量验证。
+        /// </summary>
+        public static string ComputeDigestResponse(
+            string ha1, string ha2, string nonce, string? nc, string? cnonce, string? qop, Func<string, string> hash)
+        {
+            return qop == null
+                ? hash($"{ha1}:{nonce}:{ha2}")
+                : hash($"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}");
         }
 
         private void UpdateSessionFromResponse(RTSPResponse response)
         {
             try
             {
-                var sessionHeader = response.Headers.FirstOrDefault(x => x.Key == "Session");
+                var sessionHeader = response.Headers.FirstOrDefault(x =>
+                    x.Key.Equals("Session", StringComparison.OrdinalIgnoreCase));
                 if (sessionHeader.Value != null)
                 {
                     var parts = sessionHeader.Value.Split(';');
@@ -1070,13 +1491,18 @@ namespace Cyaim.RTSPClient
             // 在循环外创建 Stopwatch，避免每次分配
             var sw = new Stopwatch();
 
+            // RTP 时间戳必须是媒体时钟采样计数（每包 += 本包采样数），
+            // 旧实现用 Unix 秒导致一秒内所有包时间戳相同，严格接收端会丢弃
+            uint rtpTimestamp = (uint)Environment.TickCount;
+
             for (int i = 0; i < totalPackets; i++)
             {
                 ct.ThrowIfCancellationRequested();
 
                 sw.Restart();
 
-                long timestamp = Timestamp.GetNowTimestamp();
+                uint timestamp = rtpTimestamp;
+                rtpTimestamp += (uint)packSecLen;
                 byte[] packet = new byte[packetHeaderLen + packSecLen];
 
                 // RTSP Interleaved Header
@@ -1118,6 +1544,31 @@ namespace Cyaim.RTSPClient
 
         #region Dispose
 
+        /// <summary>
+        /// 异步释放：发送 TEARDOWN（限时）并优雅关闭。推荐使用此方法。
+        /// </summary>
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            _userDisconnect = true;
+
+            try
+            {
+                await DisconnectAsync().ConfigureAwait(false);
+            }
+            catch { }
+
+            DisposeCore();
+            GC.SuppressFinalize(this);
+        }
+
+        /// <summary>
+        /// 同步释放：立即关闭连接，不发送 TEARDOWN、不等待任何网络 I/O。
+        /// （旧实现同步等待 TEARDOWN 响应，最长可阻塞 15 秒且在有同步上下文的线程上会死锁）
+        /// 需要优雅关闭请使用 <see cref="DisposeAsync"/> 或先调用 <see cref="DisconnectAsync"/>。
+        /// </summary>
         public void Dispose()
         {
             Dispose(true);
@@ -1126,23 +1577,36 @@ namespace Cyaim.RTSPClient
 
         protected virtual void Dispose(bool disposing)
         {
-            if (!_disposed)
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            if (disposing)
             {
-                if (disposing)
+                _userDisconnect = true;
+                StopKeepAlive();
+                StopRtcp();
+                try { _receiveCts?.Cancel(); } catch { }
+                DisposeCore();
+
+                if (State != RTSPConnectionState.Disconnected)
                 {
-                    try
-                    {
-                        DisconnectAsync().GetAwaiter().GetResult();
-                    }
-                    catch { }
-
-                    _receiveCts?.Dispose();
-                    _tcpStream?.Dispose();
-                    _client?.Dispose();
+                    SetState(RTSPConnectionState.Disconnected);
                 }
-
-                _disposed = true;
             }
+        }
+
+        private void DisposeCore()
+        {
+            try { CleanupFacade(); } catch { }
+            try { CleanupUdpTransports(); } catch { }
+            try { _tcpStream?.Dispose(); } catch { }
+            try { _client?.Dispose(); } catch { }
+            try { _receiveCts?.Dispose(); } catch { }
+            try { _keepAliveCts?.Dispose(); } catch { }
+            try { _rtcpCts?.Dispose(); } catch { }
+            _sendLock.Dispose();
+            _tcpStream = null;
+            _client = null;
         }
 
         #endregion
