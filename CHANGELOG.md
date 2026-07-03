@@ -1,5 +1,32 @@
 # Changelog
 
+## FFmpeg 编解码插件 3.0（2026-07-03）
+
+`Cyaim.RTSPClient.Codecs.FFmpeg.Video` / `Cyaim.RTSPClient.Codecs.FFmpeg.Audio` 首次达到可发布状态（此前从未纳入发布管道）。
+
+### 视频插件
+
+- **修复**：一个 packet 产出多帧时只取一帧（B 帧流丢帧且时间戳错位）→ 内部输出队列 + pts 正确透传
+- **修复**：`DecodeAsync`/`EncodeAsync` 在 EAGAIN 时返回 null 引发调用方 NRE → 接口返回类型改为可空并文档化语义（null=暂未产出，非错误）；流式方法自动 EOF 排空尾帧
+- **修复**：硬件解码下载后的 NV12 帧按 YUV420P 三平面读取导致空指针崩溃 → 按帧实际格式转换（YUV420P/NV12 直拷、其余 sws_scale 兜底），拷贝尊重 linesize
+- **新增**：`VideoDecoderConfig.ExtraData` 带外 SPS/PPS；编码器 FillFrame 修复逐行 ToArray 分配并加 make_writable
+- **修复**：packet/frame 未 unref 的引用泄漏；LowLatency 标志生效
+
+### 音频插件
+
+- **修复（关键）**：解码输出按 S16 交织假设直接拷贝 `data[0]`——AAC 实际输出 FLTP planar float，旧实现输出的是噪音 → 经 libswresample 统一转换为 16-bit 交织 PCM
+- **修复（关键）**：编码器硬设 S16 采样格式——native AAC 只接受 FLTP，`avcodec_open2` 直接失败 → 按编码器支持列表协商格式 + swresample 转换
+- **新增**：AVAudioFifo 分帧——编码器要求固定 frame_size，输入任意长度自动缓冲分帧
+- **新增**：`AudioDecoderConfig.ExtraData`（RTSP 裸 AAC 必需的 AudioSpecificConfig）；`FFmpegAudioEncoder.CodecExtraData` 导出 ASC（SDP config= 生成用）
+- **修复**：`avcodec_fill_audio_frame` 悬垂指针（fixed 作用域外使用输入内存）
+- **修复**：工厂 `CanCreate` 按 FFmpeg 实际构建能力动态探测（Speex/AMR 编码器多数构建没有，不再谎报后在 Initialize 抛异常）
+
+### 基础设施
+
+- `FFmpegHelper`：线程安全初始化、可用性缓存、库目录探测要求真实存在 avcodec 动态库（FFMPEG_PATH → 应用目录 → 常见位置）
+- 两插件加入 NuGet 发布管道（与主包同版本号）；`TreatWarningsAsErrors`；LICENSE 打包；版本 3.0.0
+- 新增 FFmpeg 功能测试（需 FFmpeg 7.x 共享库，无则自动跳过）：H.264 编解码 roundtrip、服务器 I_PCM 测试流真实解码验证、AAC roundtrip（FLTP 协商/FIFO/ASC）、工厂探测
+
 ## 3.0.0 (2026-07-03)
 
 面向 1000+ 客户服务端集成场景的可靠性/性能大修。升级指南见 [docs/Migration-v3.md](docs/Migration-v3.md)。

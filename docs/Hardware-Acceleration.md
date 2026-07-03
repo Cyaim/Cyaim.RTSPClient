@@ -10,6 +10,12 @@
 
 Cyaim.RTSPClient 通过 FFmpeg 支持多种硬件加速方案，可显著降低 CPU 使用率并提升编解码性能。
 
+### 运行时要求
+
+- 需要 **FFmpeg 7.x** 共享库（FFmpeg.AutoGen 7.1.1 绑定 avcodec-61 等），需自行部署。
+- 库查找顺序：`FFMPEG_PATH` 环境变量 → 应用输出目录及其 `ffmpeg` 子目录 → 常见安装位置。
+- 可用 `FFmpegHelper.IsAvailable()` 探测 FFmpeg 是否可用（结果缓存，不抛异常）。
+
 ### 支持的硬件
 
 | 硬件 | 厂商 | 平台 | 编码 | 解码 |
@@ -45,15 +51,15 @@ Console.WriteLine($"最佳: {best}");  // Cuda, Qsv, D3d11va, etc.
 #### 自动选择硬件
 
 ```csharp
+// 传入 Config 的重载会自动完成初始化，无需再调用 InitializeAsync
 var decoder = CodecFactory.Instance.CreateVideoDecoder(new VideoDecoderConfig
 {
     Codec = VideoCodec.H264,
     Width = 1920,
     Height = 1080,
-    EnableHardwareAcceleration = true  // 自动选择最佳硬件
+    EnableHardwareAcceleration = true,  // 自动选择最佳硬件
+    ExtraData = annexBSpsPps  // 可选：SDP sprop-parameter-sets 带外 SPS/PPS（Annex-B）
 });
-
-await decoder.InitializeAsync(config);
 
 Console.WriteLine(decoder.Name);  // "FFmpeg H.264 Decoder (Cuda)"
 Console.WriteLine(decoder.IsHardwareAccelerated);  // true
@@ -83,10 +89,31 @@ var vaapiDecoder = CodecFactory.Instance.CreateVideoDecoder(new VideoDecoderConf
 });
 ```
 
+#### 解码与输出格式
+
+`DecodeAsync` 返回可空结果：**null 表示解码器暂未产出帧（如 B 帧重排导致的输出延迟），不是错误**，后续输入会补齐输出。流式消费请用 `DecodeStreamAsync`（自动 EOF 排空尾帧）。
+
+```csharp
+// 单帧解码：必须做 null 检查
+VideoFrame? frame = await decoder.DecodeAsync(encodedFrame);
+if (frame != null)
+{
+    // 硬件解码帧下载到 CPU 后通常为 NV12，软件解码通常为 YUV420P，
+    // 其余格式内部经 sws_scale 统一转 YUV420P——以 frame.Format 为准
+    Console.WriteLine($"{frame.Width}x{frame.Height} {frame.Format}");
+}
+
+// 流式解码（推荐）
+await foreach (var f in decoder.DecodeStreamAsync(encodedFrames))
+{
+    Render(f);  // 无需 null 检查
+}
+```
+
 ### 使用硬件编码器
 
 ```csharp
-var encoder = CodecFactory.Instance.CreateVideoEncoder(new VideoEncoderConfig
+var config = new VideoEncoderConfig
 {
     Codec = VideoCodec.H264,
     Width = 1920,
@@ -95,14 +122,24 @@ var encoder = CodecFactory.Instance.CreateVideoEncoder(new VideoEncoderConfig
     Framerate = 30,
     EnableHardwareAcceleration = true,
     Preset = "fast"  // NVENC 预设: fast, medium, slow, hq
-});
+};
 
+var encoder = CodecFactory.Instance.CreateVideoEncoder(config.Codec);
 await encoder.InitializeAsync(config);
 
-// 编码
-var encoded = await encoder.EncodeAsync(frame);
-Console.WriteLine($"编码帧: {encoded.Data.Length} bytes");
-Console.WriteLine($"关键帧: {encoded.IsKeyFrame}");
+// 单帧编码：结果可空，null 表示编码器内部缓冲中（不是错误）
+EncodedVideoFrame? encoded = await encoder.EncodeAsync(frame);
+if (encoded != null)
+{
+    Console.WriteLine($"编码帧: {encoded.Data.Length} bytes");
+    Console.WriteLine($"关键帧: {encoded.IsKeyFrame}");
+}
+
+// 流式编码（推荐）：自动 EOF 排空缓冲
+await foreach (var packet in encoder.EncodeStreamAsync(frames))
+{
+    Send(packet);
+}
 ```
 
 ### 自动回退机制
@@ -185,19 +222,6 @@ var config = new VideoDecoderConfig
 };
 ```
 
-### 多 GPU 支持
-
-```csharp
-// 使用第二个 NVIDIA GPU
-var config = new VideoDecoderConfig
-{
-    Codec = VideoCodec.H264,
-    EnableHardwareAcceleration = true,
-    HardwareDevice = "cuda",
-    DeviceIndex = 1  // GPU 索引
-};
-```
-
 ---
 
 ## English
@@ -205,6 +229,12 @@ var config = new VideoDecoderConfig
 ### Overview
 
 Cyaim.RTSPClient supports multiple hardware acceleration solutions via FFmpeg, significantly reducing CPU usage and improving codec performance.
+
+### Runtime Requirements
+
+- Requires **FFmpeg 7.x** shared libraries (FFmpeg.AutoGen 7.1.1 binds avcodec-61, etc.), deployed separately.
+- Library probe order: `FFMPEG_PATH` environment variable → application output directory and its `ffmpeg` subdirectory → common install locations.
+- Use `FFmpegHelper.IsAvailable()` to probe availability (cached, non-throwing).
 
 ### Supported Hardware
 
@@ -235,7 +265,7 @@ Console.WriteLine($"Best: {best}");
 ### Use Hardware Decoder
 
 ```csharp
-// Auto-select hardware
+// Auto-select hardware; the config overload initializes the decoder automatically
 var decoder = CodecFactory.Instance.CreateVideoDecoder(new VideoDecoderConfig
 {
     Codec = VideoCodec.H264,
@@ -252,6 +282,48 @@ var qsvDecoder = CodecFactory.Instance.CreateVideoDecoder(new VideoDecoderConfig
     Codec = VideoCodec.H264,
     HardwareDevice = "qsv"
 });
+
+// Single-shot decode is nullable: null means no frame produced yet
+// (e.g. B-frame reordering delay) — not an error
+VideoFrame? frame = await decoder.DecodeAsync(encodedFrame);
+if (frame != null)
+{
+    // Hardware frames downloaded to CPU are typically NV12; software decode is
+    // typically YUV420P; other formats are converted to YUV420P via sws_scale.
+    // Always check frame.Format.
+    Render(frame);
+}
+
+// Streaming (recommended): drains trailing frames via EOF automatically
+await foreach (var f in decoder.DecodeStreamAsync(encodedFrames))
+    Render(f);
+```
+
+### Use Hardware Encoder
+
+```csharp
+var config = new VideoEncoderConfig
+{
+    Codec = VideoCodec.H264,
+    Width = 1920,
+    Height = 1080,
+    Bitrate = 4000000,
+    Framerate = 30,
+    EnableHardwareAcceleration = true,
+    Preset = "fast"
+};
+
+var encoder = CodecFactory.Instance.CreateVideoEncoder(config.Codec);
+await encoder.InitializeAsync(config);
+
+// Nullable result: null means the encoder is buffering internally (not an error)
+EncodedVideoFrame? encoded = await encoder.EncodeAsync(frame);
+if (encoded != null)
+    Send(encoded);
+
+// Streaming (recommended): drains buffered packets via EOF automatically
+await foreach (var packet in encoder.EncodeStreamAsync(frames))
+    Send(packet);
 ```
 
 ### Performance Comparison
