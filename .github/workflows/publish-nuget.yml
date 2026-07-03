@@ -37,6 +37,10 @@ jobs:
     # 编译项目
     - name: 编译项目
       run: dotnet build Cyaim.RTSPClient/Cyaim.RTSPClient.csproj --configuration Release --no-restore -p:Version=${{ steps.version.outputs.version }}
+
+    # 测试关卡：任何测试失败都阻止发布到 NuGet
+    - name: 运行测试
+      run: dotnet test Cyaim.RTSPClient.Tests/Cyaim.RTSPClient.Tests.csproj --configuration Release
     
     # 打包
     - name: 打包NuGet

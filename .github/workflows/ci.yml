@@ -1,0 +1,25 @@
+name: CI 构建与测试
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+
+    - name: 设置 .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    # 只测测试项目（会连带构建客户端与服务端库）；
+    # 不构建整个解决方案——Dashboard 是 net10.0-windows，Linux 上无法构建
+    - name: 运行测试
+      run: dotnet test Cyaim.RTSPClient.Tests/Cyaim.RTSPClient.Tests.csproj --configuration Release --logger "console;verbosity=normal"
