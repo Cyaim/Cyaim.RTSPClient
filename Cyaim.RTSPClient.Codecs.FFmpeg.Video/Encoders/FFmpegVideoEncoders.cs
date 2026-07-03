@@ -96,25 +96,10 @@ namespace Cyaim.RTSPClient.Codecs.FFmpeg.Video.Encoders
             _codecCtx->gop_size = config.GopSize > 0 ? config.GopSize : 30;
             _codecCtx->max_b_frames = config.BFrames;
 
-            // 配置硬件加速
-            if (_hwType != HardwareAccelerationType.None)
-            {
-                var hwPixFmt = FFmpegHardwareHelper.GetHardwarePixelFormat(_hwType);
-                _codecCtx->pix_fmt = hwPixFmt;
-
-                // 创建硬件设备上下文
-                var error = FFmpegHardwareHelper.ConfigureHardwareContext(_codecCtx, codec, _hwType);
-                if (error < 0)
-                {
-                    // 硬件配置失败，回退到软件
-                    _hwType = HardwareAccelerationType.None;
-                    _codecCtx->pix_fmt = AVPixelFormat.AV_PIX_FMT_YUV420P;
-                }
-            }
-            else
-            {
-                _codecCtx->pix_fmt = AVPixelFormat.AV_PIX_FMT_YUV420P;
-            }
+            // 像素格式：硬件编码器（h264_qsv/hevc_qsv/nvenc/amf 等）接受系统内存帧
+            // （NV12/YUV420P），由驱动内部上传 GPU——不要设置 AV_PIX_FMT_QSV 等
+            // 硬件表面格式（那需要完整的 hw_frames_ctx 配置，旧实现因此打不开）
+            _codecCtx->pix_fmt = SelectEncoderPixelFormat(codec);
 
             // 设置预设
             if (!string.IsNullOrEmpty(config.Preset))
@@ -123,28 +108,73 @@ namespace Cyaim.RTSPClient.Codecs.FFmpeg.Video.Encoders
             if (!string.IsNullOrEmpty(config.Profile))
                 ffmpeg.av_opt_set(_codecCtx->priv_data, "profile", config.Profile, 0);
 
-            // 打开编码器
+            // 打开编码器（硬件编码器初始化失败时回退软件编码器）
             var openError = ffmpeg.avcodec_open2(_codecCtx, codec, null);
+            if (openError < 0 && _hwType != HardwareAccelerationType.None)
+            {
+                fixed (AVCodecContext** p = &_codecCtx)
+                    ffmpeg.avcodec_free_context(p);
+
+                _hwType = HardwareAccelerationType.None;
+                codec = ffmpeg.avcodec_find_encoder(codecId);
+                if (codec == null)
+                    throw new InvalidOperationException($"Encoder not found: {config.Codec}");
+
+                _codecCtx = ffmpeg.avcodec_alloc_context3(codec);
+                _codecCtx->width = config.Width;
+                _codecCtx->height = config.Height;
+                _codecCtx->bit_rate = config.Bitrate > 0 ? config.Bitrate : 2000000;
+                _codecCtx->time_base = new AVRational { num = 1, den = config.Framerate > 0 ? config.Framerate : 30 };
+                _codecCtx->framerate = new AVRational { num = config.Framerate > 0 ? config.Framerate : 30, den = 1 };
+                _codecCtx->gop_size = config.GopSize > 0 ? config.GopSize : 30;
+                _codecCtx->max_b_frames = config.BFrames;
+                _codecCtx->pix_fmt = SelectEncoderPixelFormat(codec);
+                if (!string.IsNullOrEmpty(config.Preset))
+                    ffmpeg.av_opt_set(_codecCtx->priv_data, "preset", config.Preset, 0);
+
+                openError = ffmpeg.avcodec_open2(_codecCtx, codec, null);
+            }
             FFmpegHelper.CheckError(openError);
 
-            // 分配帧
+            // 分配输入帧（编码器实际采用的像素格式）
             _frame = ffmpeg.av_frame_alloc();
             _frame->width = config.Width;
             _frame->height = config.Height;
-            _frame->format = (int)(_hwType != HardwareAccelerationType.None
-                ? FFmpegHardwareHelper.GetHardwarePixelFormat(_hwType)
-                : AVPixelFormat.AV_PIX_FMT_YUV420P);
-            ffmpeg.av_frame_get_buffer(_frame, 0);
-
-            // 硬件编码需要额外的硬件帧
-            if (_hwType != HardwareAccelerationType.None)
-            {
-                _hwFrame = ffmpeg.av_frame_alloc();
-            }
+            _frame->format = (int)_codecCtx->pix_fmt;
+            FFmpegHelper.CheckError(ffmpeg.av_frame_get_buffer(_frame, 0));
 
             _packet = ffmpeg.av_packet_alloc();
             _state = ProcessorState.Ready;
             return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// 选择编码器可接受的系统内存像素格式（优先 YUV420P，其次 NV12）
+        /// </summary>
+        private static AVPixelFormat SelectEncoderPixelFormat(AVCodec* codec)
+        {
+            // pix_fmts 在 FFmpeg 7.x 标记弃用但仍填充；旧字段保证跨版本兼容
+#pragma warning disable CS0618
+            var fmts = codec->pix_fmts;
+#pragma warning restore CS0618
+            if (fmts == null)
+                return AVPixelFormat.AV_PIX_FMT_YUV420P;
+
+            bool hasNv12 = false;
+            AVPixelFormat first = AVPixelFormat.AV_PIX_FMT_NONE;
+            for (var p = fmts; *p != AVPixelFormat.AV_PIX_FMT_NONE; p++)
+            {
+                if (*p == AVPixelFormat.AV_PIX_FMT_YUV420P)
+                    return AVPixelFormat.AV_PIX_FMT_YUV420P;
+                if (*p == AVPixelFormat.AV_PIX_FMT_NV12)
+                    hasNv12 = true;
+                if (first == AVPixelFormat.AV_PIX_FMT_NONE)
+                    first = *p;
+            }
+
+            if (hasNv12)
+                return AVPixelFormat.AV_PIX_FMT_NV12;
+            return first != AVPixelFormat.AV_PIX_FMT_NONE ? first : AVPixelFormat.AV_PIX_FMT_YUV420P;
         }
 
         private readonly Queue<EncodedVideoFrame> _pendingPackets = new();
@@ -159,29 +189,19 @@ namespace Cyaim.RTSPClient.Codecs.FFmpeg.Video.Encoders
 
             try
             {
-                // 填充软件帧
+                // 填充输入帧（硬件编码器同样接收系统内存帧，由驱动内部上传）
                 FillSoftwareFrame(input);
-
-                AVFrame* encodeFrame = _frame;
-
-                // 如果使用硬件加速，需要上传到 GPU
-                if (_hwType != HardwareAccelerationType.None)
-                {
-                    var uploadError = ffmpeg.av_hwframe_transfer_data(_hwFrame, _frame, 0);
-                    FFmpegHelper.CheckError(uploadError);
-                    encodeFrame = _hwFrame;
-                }
 
                 // pts=帧号；编码器输出包可能延迟（B 帧/前瞻），用映射把输入时间戳配回正确的输出包
                 long pts = _frameNumber++;
-                encodeFrame->pts = pts;
+                _frame->pts = pts;
                 _ptsToTimestamp[pts] = input.Timestamp;
 
-                var error = ffmpeg.avcodec_send_frame(_codecCtx, encodeFrame);
+                var error = ffmpeg.avcodec_send_frame(_codecCtx, _frame);
                 if (error == ffmpeg.AVERROR(ffmpeg.EAGAIN))
                 {
                     DrainEncodedPackets(input.Width, input.Height);
-                    error = ffmpeg.avcodec_send_frame(_codecCtx, encodeFrame);
+                    error = ffmpeg.avcodec_send_frame(_codecCtx, _frame);
                 }
                 FFmpegHelper.CheckError(error);
 
@@ -302,8 +322,29 @@ namespace Cyaim.RTSPClient.Codecs.FFmpeg.Video.Encoders
             fixed (byte* pSrc = data)
             {
                 CopyPlaneToFrame(pSrc, w, _frame->data[0], _frame->linesize[0], w, h);
-                CopyPlaneToFrame(pSrc + ySize, w / 2, _frame->data[1], _frame->linesize[1], w / 2, h / 2);
-                CopyPlaneToFrame(pSrc + ySize + uvSize, w / 2, _frame->data[2], _frame->linesize[2], w / 2, h / 2);
+
+                if ((AVPixelFormat)_frame->format == AVPixelFormat.AV_PIX_FMT_NV12)
+                {
+                    // 编码器要求 NV12（如 QSV）：输入 YUV420P 的 U/V 平面交织写入
+                    byte* pU = pSrc + ySize;
+                    byte* pV = pSrc + ySize + uvSize;
+                    for (int y = 0; y < h / 2; y++)
+                    {
+                        byte* dst = _frame->data[1] + (long)y * _frame->linesize[1];
+                        byte* u = pU + (long)y * (w / 2);
+                        byte* v = pV + (long)y * (w / 2);
+                        for (int x = 0; x < w / 2; x++)
+                        {
+                            dst[x * 2] = u[x];
+                            dst[x * 2 + 1] = v[x];
+                        }
+                    }
+                }
+                else
+                {
+                    CopyPlaneToFrame(pSrc + ySize, w / 2, _frame->data[1], _frame->linesize[1], w / 2, h / 2);
+                    CopyPlaneToFrame(pSrc + ySize + uvSize, w / 2, _frame->data[2], _frame->linesize[2], w / 2, h / 2);
+                }
             }
         }
 

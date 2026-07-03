@@ -250,6 +250,111 @@ public class FFmpegCodecTests
         Assert.Equal(0, bridge.Decoder.DecodeErrorCount);
     }
 
+    [Theory]
+    [InlineData(VideoCodec.H265, true)]    // 本机有 QSV 等硬件时走硬件编码，否则回退软件；均无 HEVC 编码器则跳过
+    [InlineData(VideoCodec.VP8, false)]
+    [InlineData(VideoCodec.VP9, false)]
+    public async Task 多编码格式Roundtrip(VideoCodec codec, bool hardware)
+    {
+        if (!FFmpegAvailable) return;
+
+        const int width = 320, height = 240, frameCount = 10;
+
+        FFmpegVideoEncoder encoder = codec switch
+        {
+            VideoCodec.H265 => new H265Encoder(),
+            VideoCodec.VP8 => new VP8Encoder(),
+            VideoCodec.VP9 => new VP9Encoder(),
+            _ => throw new ArgumentOutOfRangeException(nameof(codec))
+        };
+        FFmpegVideoDecoder decoder = codec switch
+        {
+            VideoCodec.H265 => new H265Decoder(),
+            VideoCodec.VP8 => new VP8Decoder(),
+            VideoCodec.VP9 => new VP9Decoder(),
+            _ => throw new ArgumentOutOfRangeException(nameof(codec))
+        };
+
+        using (encoder)
+        using (decoder)
+        {
+            try
+            {
+                await encoder.InitializeAsync(new VideoEncoderConfig
+                {
+                    Codec = codec, Width = width, Height = height, Framerate = 25,
+                    Bitrate = 500_000, GopSize = 10, EnableHardwareAcceleration = hardware
+                });
+            }
+            catch (Exception)
+            {
+                return; // 本机 FFmpeg 构建无该编码器（如 LGPL 无 x265 且无硬件）——跳过
+            }
+
+            var packets = new List<EncodedVideoFrame>();
+            for (int i = 0; i < frameCount; i++)
+            {
+                var pkt = await encoder.EncodeAsync(MakeYuvFrame(width, height, i));
+                if (pkt != null) packets.Add(pkt);
+                while (encoder.DequeuePendingPacket() is { } e) packets.Add(e);
+            }
+            await encoder.FlushAsync();
+            while (encoder.DequeuePendingPacket() is { } t) packets.Add(t);
+
+            Assert.True(packets.Count >= frameCount - 2, $"{codec} 编码 {packets.Count}/{frameCount}");
+
+            await decoder.InitializeAsync(new VideoDecoderConfig { Codec = codec, EnableHardwareAcceleration = false });
+            int frames = 0;
+            foreach (var pkt in packets)
+            {
+                if (await decoder.DecodeAsync(pkt) != null) frames++;
+                while (decoder.DequeuePendingFrame() != null) frames++;
+            }
+            await decoder.FlushAsync();
+            while (decoder.DequeuePendingFrame() != null) frames++;
+
+            Assert.True(frames >= frameCount - 2, $"{codec} 解码 {frames}/{packets.Count}");
+            Assert.Equal(0, decoder.DecodeErrorCount);
+        }
+    }
+
+    [Fact]
+    public async Task 视频ExtraData_带外参数集仅喂IDR可解()
+    {
+        if (!FFmpegAvailable) return;
+
+        static byte[] AnnexB(params byte[][] nals)
+        {
+            var ms = new MemoryStream();
+            foreach (var nal in nals) { ms.Write(new byte[] { 0, 0, 0, 1 }); ms.Write(nal); }
+            return ms.ToArray();
+        }
+
+        using var decoder = new H264Decoder();
+        await decoder.InitializeAsync(new VideoDecoderConfig
+        {
+            Codec = VideoCodec.H264,
+            EnableHardwareAcceleration = false,
+            ExtraData = AnnexB(H264TestStream.Sps, H264TestStream.Pps)   // SDP 带外参数集
+        });
+
+        // 码流本身不含 SPS/PPS——只有 extradata 生效才能解出
+        var frame = await decoder.DecodeAsync(new EncodedVideoFrame
+        {
+            Data = AnnexB(H264TestStream.IdrFrame),
+            Codec = VideoCodec.H264
+        });
+        if (frame == null)
+        {
+            await decoder.FlushAsync();
+            frame = decoder.DequeuePendingFrame();
+        }
+
+        Assert.NotNull(frame);
+        Assert.Equal(320, frame!.Width);
+        Assert.Equal(0, decoder.DecodeErrorCount);
+    }
+
     // ---------- 音频 ----------
 
     [Fact]
